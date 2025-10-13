@@ -218,6 +218,9 @@ pub struct Config {
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
 
+    /// Template used when computing the prompt cache key. Supports `{conversation_id}` substitution.
+    pub prompt_cache_key_template: String,
+
     /// The active profile name used to derive this `Config` (if any).
     pub active_profile: Option<String>,
 
@@ -732,6 +735,9 @@ pub struct ConfigToml {
     /// System instructions.
     pub instructions: Option<String>,
 
+    /// Template used when computing the prompt cache key. Supports `{conversation_id}` substitution.
+    pub prompt_cache_key_template: Option<String>,
+
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
@@ -957,6 +963,7 @@ pub struct ConfigOverrides {
     pub include_view_image_tool: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
+    pub prompt_cache_key_template: Option<String>,
 }
 
 impl Config {
@@ -985,6 +992,7 @@ impl Config {
             include_view_image_tool,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
+            prompt_cache_key_template: override_prompt_cache_key_template,
         } = overrides;
 
         let active_profile_name = config_profile_key
@@ -1104,6 +1112,11 @@ impl Config {
             .or(cfg.review_model)
             .unwrap_or_else(default_review_model);
 
+        let prompt_cache_key_template = override_prompt_cache_key_template
+            .or(config_profile.prompt_cache_key_template.clone())
+            .or(cfg.prompt_cache_key_template.clone())
+            .unwrap_or_else(|| "{conversation_id}".to_string());
+
         let config = Self {
             model,
             review_model,
@@ -1177,6 +1190,7 @@ impl Config {
                 .unwrap_or(false),
             use_experimental_use_rmcp_client: cfg.experimental_use_rmcp_client.unwrap_or(false),
             include_view_image_tool,
+            prompt_cache_key_template,
             active_profile: active_profile_name,
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),

@@ -506,6 +506,7 @@ pub struct Profile {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
     pub chatgpt_base_url: Option<String>,
+    pub prompt_cache_key_template: Option<String>,
 }
 /// MCP representation of a [`codex_core::config::ToolsToml`].
 #[derive(Deserialize, Debug, Clone, PartialEq, Serialize, TS)]

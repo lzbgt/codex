@@ -63,6 +63,10 @@ pub struct Cli {
     #[arg(long = "no-search", action = ArgAction::SetTrue)]
     pub disable_web_search: bool,
 
+    /// Override the prompt cache key template (supports `{conversation_id}`).
+    #[arg(long = "prompt-cache-key-template", value_name = "TEMPLATE")]
+    pub prompt_cache_key_template: Option<String>,
+
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
 

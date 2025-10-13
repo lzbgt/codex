@@ -25,6 +25,13 @@ source "$HOME/.cargo/env"
 rustup component add rustfmt
 rustup component add clippy
 
+> ⚠️ **Use the rustup-managed toolchain.**  
+> Some system packages (for example Homebrew’s `cargo` 1.83 on macOS) are too old to compile the workspace because several crates depend on the 2024 edition. Make sure the `cargo` that runs the build is the one installed by rustup (`$HOME/.cargo/bin/cargo`). You can either export `PATH="$HOME/.cargo/bin:$PATH"` before building or invoke it explicitly:
+>
+> ```bash
+> ~/.cargo/bin/cargo build --release --bin codex --bin codex-responses-api-proxy
+> ```
+
 # Build Codex.
 cargo build
 

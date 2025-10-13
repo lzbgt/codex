@@ -20,6 +20,7 @@ pub struct ConfigProfile {
     pub model_verbosity: Option<Verbosity>,
     pub chatgpt_base_url: Option<String>,
     pub experimental_instructions_file: Option<PathBuf>,
+    pub prompt_cache_key_template: Option<String>,
 }
 
 impl From<ConfigProfile> for codex_app_server_protocol::Profile {
@@ -32,6 +33,7 @@ impl From<ConfigProfile> for codex_app_server_protocol::Profile {
             model_reasoning_summary: config_profile.model_reasoning_summary,
             model_verbosity: config_profile.model_verbosity,
             chatgpt_base_url: config_profile.chatgpt_base_url,
+            prompt_cache_key_template: config_profile.prompt_cache_key_template,
         }
     }
 }

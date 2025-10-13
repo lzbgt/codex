@@ -221,6 +221,18 @@ impl ModelClient {
         // For Azure, we send `store: true` and preserve reasoning item IDs.
         let azure_workaround = self.provider.is_azure_responses_endpoint();
 
+        let prompt_cache_key = {
+            let rendered = self
+                .config
+                .prompt_cache_key_template
+                .replace("{conversation_id}", &self.conversation_id.to_string());
+            if rendered.trim().is_empty() {
+                None
+            } else {
+                Some(rendered)
+            }
+        };
+
         let payload = ResponsesApiRequest {
             model: &self.config.model,
             instructions: &full_instructions,
@@ -232,7 +244,7 @@ impl ModelClient {
             store: azure_workaround,
             stream: true,
             include,
-            prompt_cache_key: Some(self.conversation_id.to_string()),
+            prompt_cache_key,
             text,
         };
 

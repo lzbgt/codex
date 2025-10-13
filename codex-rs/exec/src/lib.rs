@@ -71,6 +71,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         include_plan_tool,
         web_search,
         disable_web_search,
+        prompt_cache_key_template,
         config_overrides,
     } = cli;
 
@@ -191,6 +192,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         include_view_image_tool: None,
         show_raw_agent_reasoning: oss.then_some(true),
         tools_web_search_request: web_search_override,
+        prompt_cache_key_template: prompt_cache_key_template,
     };
     // Parse `-c` overrides.
     let cli_kv_overrides = match config_overrides.parse_overrides() {
