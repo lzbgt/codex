@@ -960,6 +960,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-tui",
  "ctor 0.5.0",
+ "dirs",
  "owo-colors",
  "predicates",
  "pretty_assertions",
@@ -967,6 +968,7 @@ dependencies = [
  "supports-color",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

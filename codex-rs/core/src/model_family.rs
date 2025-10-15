@@ -158,6 +158,11 @@ pub fn find_family_for_model(mut slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             needs_special_apply_patch_instructions: true,
         )
+    } else if slug.starts_with("deepseek-") {
+        model_family!(
+            slug, "deepseek",
+            needs_special_apply_patch_instructions: true,
+        )
     } else {
         None
     }

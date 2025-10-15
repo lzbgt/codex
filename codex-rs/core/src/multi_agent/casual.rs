@@ -1,0 +1,1231 @@
+//! Casual Multi-Agent Collaboration System for Codex
+//!
+//! This module provides a simplified multi-agent system where:
+//! - User provides a single objective
+//! - LLM dynamically creates agent team and task plan
+//! - AI agents collaborate autonomously
+//! - Human can casually engage without formal joining
+//! - Zero breaking changes to standalone Codex
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::path::PathBuf;
+use tokio::sync::{mpsc, RwLock};
+use anyhow::Result;
+use uuid::Uuid;
+
+use crate::config::Config;
+use crate::conversation_manager::ConversationManager;
+use crate::rollout::RolloutRecorder;
+use codex_protocol::ConversationId;
+
+/// Casual human engagement actions
+#[derive(Debug, Clone)]
+pub enum CasualAction {
+    DropInfo {
+        info: String,
+        context: Option<String>,
+    },
+    ProvideData {
+        data_type: String,
+        content: String,
+    },
+    SuggestTask {
+        objective: String,
+    },
+    QuickGuidance {
+        message: String,
+        to_agent: Option<String>,
+    },
+}
+
+/// Lightweight snapshot for casual progress checking
+#[derive(Debug, Clone)]
+pub struct TaskSnapshot {
+    pub task_id: String,
+    pub status: String,
+    pub active_agents: Vec<String>,
+    pub recent_activity: String,
+    pub human_attention_needed: bool,
+    pub progress_percentage: u8,
+}
+
+/// Detailed agent status information
+#[derive(Debug, Clone)]
+pub struct AgentStatusDetail {
+    pub agent_id: String,
+    pub role: String,
+    pub status: String,
+    pub current_task: String,
+    pub agent_type: String,
+}
+
+/// Detailed message information
+#[derive(Debug, Clone)]
+pub struct MessageDetail {
+    pub timestamp: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub content: String,
+    pub message_type: String,
+}
+
+/// Detailed task status with full breakdown
+#[derive(Debug, Clone)]
+pub struct DetailedTaskStatus {
+    pub task_id: String,
+    pub objective: String,
+    pub overall_status: String,
+    pub agent_statuses: Vec<AgentStatusDetail>,
+    pub recent_messages: Vec<MessageDetail>,
+    pub artifact_count: usize,
+    pub human_engagement_count: u32,
+    pub created_at: String,
+}
+
+/// Casual multi-agent task session
+#[derive(Clone)]
+pub struct CasualTaskSession {
+    pub task_id: String,
+    pub objective: String,
+    pub status: TaskStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub agents: HashMap<String, CasualAgent>,
+    pub messages: VecDeque<CasualMessage>,
+    pub artifacts: HashMap<String, CasualArtifact>,
+    pub human_engagement_count: u32,
+    pub session_persistence_path: Option<PathBuf>,
+    pub conversation_manager: Option<Arc<ConversationManager>>,
+    pub rollout_recorder: Option<Arc<RolloutRecorder>>,
+}
+
+/// Casual agent (dynamically created by LLM)
+#[derive(Clone)]
+pub struct CasualAgent {
+    pub id: String,
+    pub role: String,
+    pub expertise: Vec<String>,
+    pub status: AgentStatus,
+    pub current_task: Option<String>,
+    pub agent_type: AgentType,
+    pub model_provider: String,
+    pub model: String,
+    pub session_id: ConversationId,
+    pub conversation_manager: Option<Arc<ConversationManager>>,
+    pub rollout_recorder: Option<Arc<RolloutRecorder>>,
+}
+
+/// Agent type
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentType {
+    AI,
+    Human,
+}
+
+/// Agent status
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Completed,
+    WaitingForHumanInput,
+}
+
+/// Task status
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskStatus {
+    Planning,
+    InProgress,
+    Completed,
+    Failed,
+    PausedForHumanInput,
+}
+
+/// Casual message for communication
+#[derive(Debug, Clone)]
+pub struct CasualMessage {
+    pub id: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub from_agent: String,
+    pub to_agent: Option<String>, // None = broadcast
+    pub content: String,
+    pub message_type: MessageType,
+    pub requires_human_attention: bool,
+}
+
+/// Message types
+#[derive(Debug, Clone)]
+pub enum MessageType {
+    Coordination,
+    HumanRequest,
+    HumanGuidance,
+    TaskUpdate,
+    ArtifactShared,
+    StatusReport,
+}
+
+/// Casual artifact (code, document, etc.)
+#[derive(Debug, Clone)]
+pub struct CasualArtifact {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub artifact_type: ArtifactType,
+    pub created_by: String,
+    pub shared_with: Vec<String>,
+}
+
+/// Artifact types
+#[derive(Debug, Clone)]
+pub enum ArtifactType {
+    Code,
+    Document,
+    Configuration,
+    Test,
+    Data,
+    Other,
+}
+
+/// Agent role definition from LLM planning
+#[derive(Debug, Clone)]
+pub struct AgentRole {
+    pub role: String,
+    pub expertise: Vec<String>,
+    pub primary_task: String,
+    pub model_provider: String,
+    pub model: String,
+    pub agent_type: AgentType,
+}
+
+/// Agent plan generated by LLM
+#[derive(Debug, Clone)]
+pub struct AgentPlan {
+    pub roles: Vec<AgentRole>,
+    pub task_breakdown: Vec<String>,
+}
+
+/// Casual multi-agent orchestrator
+pub struct CasualMultiAgentOrchestrator {
+    active_sessions: Arc<RwLock<HashMap<String, CasualTaskSession>>>,
+    message_queue: mpsc::UnboundedSender<CasualMessage>,
+    config: Arc<Config>,
+    conversation_manager: Arc<ConversationManager>,
+    auth_manager: Arc<crate::auth::AuthManager>,
+}
+
+impl CasualMultiAgentOrchestrator {
+    /// Create a new casual multi-agent orchestrator
+    pub fn new(config: Arc<Config>) -> Result<Self> {
+        let (message_tx, _message_rx) = mpsc::unbounded_channel();
+
+        // Initialize conversation manager for session persistence
+        let codex_home = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".codex");
+        let auth_manager = Arc::new(crate::auth::AuthManager::new(codex_home, false));
+        let conversation_manager = Arc::new(ConversationManager::new(
+            auth_manager.clone(),
+            codex_protocol::protocol::SessionSource::Cli,
+        ));
+
+        Ok(Self {
+            active_sessions: Arc::new(RwLock::new(HashMap::new())),
+            message_queue: message_tx,
+            config,
+            conversation_manager,
+            auth_manager,
+        })
+    }
+
+    /// Publish a new task for casual multi-agent collaboration
+    pub async fn publish_task(&self, objective: String) -> Result<CasualTaskSession> {
+        let task_id = Uuid::new_v4().to_string();
+
+        // Initialize session persistence
+        let session_config = (*self.config).clone();
+        let new_conversation = self.conversation_manager.new_conversation(session_config).await?;
+        let rollout_recorder = Arc::new(RolloutRecorder::new(
+            &self.config,
+            crate::rollout::RolloutRecorderParams::new(
+                new_conversation.conversation_id,
+                Some(objective.clone()),
+                codex_protocol::protocol::SessionSource::Cli,
+            ),
+        ).await?);
+
+        let session = CasualTaskSession {
+            task_id: task_id.clone(),
+            objective: objective.clone(),
+            status: TaskStatus::Planning,
+            created_at: chrono::Utc::now(),
+            agents: HashMap::new(),
+            messages: VecDeque::new(),
+            artifacts: HashMap::new(),
+            human_engagement_count: 0,
+            session_persistence_path: Some(rollout_recorder.get_rollout_path()),
+            conversation_manager: Some(self.conversation_manager.clone()),
+            rollout_recorder: Some(rollout_recorder),
+        };
+
+        {
+            let mut sessions = self.active_sessions.write().await;
+            sessions.insert(task_id.clone(), session.clone());
+        }
+
+        println!("Casual multi-agent task published: {}", task_id);
+        println!("Objective: {}", objective);
+        println!("Status: Planning phase...");
+
+        // Start the planning phase in background
+        let orchestrator = self.clone();
+        let task_id_clone = task_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = orchestrator.start_planning_phase(&task_id_clone).await {
+                eprintln!("Planning phase failed for task {}: {}", task_id_clone, e);
+            }
+        });
+
+        Ok(session)
+    }
+
+    /// Casual human engagement - no formal joining required
+    pub async fn casually_engage(&self, task_id: &str, action: CasualAction) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions.get_mut(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        session.human_engagement_count += 1;
+
+        match action {
+            CasualAction::DropInfo { info, context } => {
+                let message = CasualMessage {
+                    id: Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    from_agent: "human".to_string(),
+                    to_agent: None, // Broadcast
+                    content: format!("Human info: {}{}", info, context.map(|c| format!(" (Context: {})", c)).unwrap_or_default()),
+                    message_type: MessageType::HumanGuidance,
+                    requires_human_attention: false,
+                };
+                session.messages.push_back(message);
+                println!("Human casually dropped info for task {}: {}", task_id, info);
+            }
+            CasualAction::ProvideData { data_type, content } => {
+                let artifact = CasualArtifact {
+                    id: Uuid::new_v4().to_string(),
+                    name: format!("Human provided {}", data_type),
+                    content,
+                    artifact_type: ArtifactType::Data,
+                    created_by: "human".to_string(),
+                    shared_with: vec!["all".to_string()],
+                };
+                session.artifacts.insert(artifact.id.clone(), artifact);
+                println!("Human casually provided data for task {}: {}", task_id, data_type);
+            }
+            CasualAction::SuggestTask { objective } => {
+                let message = CasualMessage {
+                    id: Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    from_agent: "human".to_string(),
+                    to_agent: None, // Broadcast
+                    content: format!("Human task suggestion: {}", objective),
+                    message_type: MessageType::HumanGuidance,
+                    requires_human_attention: false,
+                };
+                session.messages.push_back(message);
+                println!("Human casually suggested new task for {}: {}", task_id, objective);
+            }
+            CasualAction::QuickGuidance { message, to_agent } => {
+                let message_content = message.clone();
+                let message = CasualMessage {
+                    id: Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    from_agent: "human".to_string(),
+                    to_agent,
+                    content: format!("Human guidance: {}", message),
+                    message_type: MessageType::HumanGuidance,
+                    requires_human_attention: false,
+                };
+                session.messages.push_back(message);
+                println!("Human casually provided guidance for task {}: {}", task_id, message_content);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Quick progress peek - no commitment required
+    pub async fn peek_at_progress(&self, task_id: &str) -> Result<TaskSnapshot> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let active_agents: Vec<String> = session.agents.values()
+            .filter(|agent| agent.status == AgentStatus::Working || agent.status == AgentStatus::Blocked)
+            .map(|agent| agent.role.clone())
+            .collect();
+
+        let recent_activity = session.messages.iter()
+            .rev()
+            .take(3)
+            .map(|msg| format!("{}: {}", msg.from_agent, msg.content))
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        let human_attention_needed = session.messages.iter()
+            .any(|msg| msg.requires_human_attention);
+
+        // Calculate progress percentage (simplified)
+        let progress_percentage = match session.status {
+            TaskStatus::Planning => 10,
+            TaskStatus::InProgress => 50,
+            TaskStatus::Completed => 100,
+            TaskStatus::Failed => 0,
+            TaskStatus::PausedForHumanInput => 30,
+        };
+
+        Ok(TaskSnapshot {
+            task_id: task_id.to_string(),
+            status: format!("{:?}", session.status),
+            active_agents,
+            recent_activity: if recent_activity.is_empty() {
+                "No recent activity".to_string()
+            } else {
+                recent_activity
+            },
+            human_attention_needed,
+            progress_percentage,
+        })
+    }
+
+    /// Get detailed task status with agent breakdown
+    pub async fn get_detailed_status(&self, task_id: &str) -> Result<DetailedTaskStatus> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let agent_statuses: Vec<AgentStatusDetail> = session.agents.values()
+            .map(|agent| AgentStatusDetail {
+                agent_id: agent.id.clone(),
+                role: agent.role.clone(),
+                status: format!("{:?}", agent.status),
+                current_task: agent.current_task.clone().unwrap_or_default(),
+                agent_type: format!("{:?}", agent.agent_type),
+            })
+            .collect();
+
+        let recent_messages: Vec<MessageDetail> = session.messages.iter()
+            .rev()
+            .take(10)
+            .map(|msg| MessageDetail {
+                timestamp: msg.timestamp.to_rfc3339(),
+                from_agent: msg.from_agent.clone(),
+                to_agent: msg.to_agent.clone().unwrap_or("all".to_string()),
+                content: msg.content.clone(),
+                message_type: format!("{:?}", msg.message_type),
+            })
+            .collect();
+
+        let artifact_count = session.artifacts.len();
+        let human_engagement_count = session.human_engagement_count;
+
+        Ok(DetailedTaskStatus {
+            task_id: task_id.to_string(),
+            objective: session.objective.clone(),
+            overall_status: format!("{:?}", session.status),
+            agent_statuses,
+            recent_messages,
+            artifact_count,
+            human_engagement_count,
+            created_at: session.created_at.to_rfc3339(),
+        })
+    }
+
+    /// Get recent messages for casual checking
+    pub async fn get_recent_messages(&self, task_id: &str, limit: usize) -> Result<Vec<CasualMessage>> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let messages: Vec<CasualMessage> = session.messages.iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect();
+
+        Ok(messages)
+    }
+
+    /// AI agent sends message to other agents or human
+    pub async fn agent_send_message(
+        &self,
+        task_id: &str,
+        from_agent: &str,
+        to_agent: Option<String>,
+        content: String,
+        message_type: MessageType,
+        requires_human_attention: bool,
+    ) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions.get_mut(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        let message = CasualMessage {
+            id: Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now(),
+            from_agent: from_agent.to_string(),
+            to_agent,
+            content,
+            message_type,
+            requires_human_attention,
+        };
+
+        session.messages.push_back(message);
+
+        // If human attention is required, update session status
+        if requires_human_attention {
+            session.status = TaskStatus::PausedForHumanInput;
+        }
+
+        Ok(())
+    }
+
+    /// Start collaborative execution between AI agents
+    pub async fn start_agent_collaboration(&self, task_id: &str) -> Result<()> {
+        // Get the session to access agents
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        // Start background collaboration for each AI agent
+        for agent in session.agents.values() {
+            if agent.agent_type == AgentType::AI {
+                let orchestrator = self.clone();
+                let task_id_clone = task_id.to_string();
+                let agent_id = agent.id.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = orchestrator.execute_agent_work(&task_id_clone, &agent_id).await {
+                        eprintln!("Agent {} collaboration failed: {}", agent_id, e);
+                    }
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute agent work in background with real model execution
+    async fn execute_agent_work(&self, task_id: &str, agent_id: &str) -> Result<()> {
+        // Auto-save session state at the beginning
+        self.auto_save_session_state(task_id).await?;
+
+        // Get agent and task information
+        let (agent, task_description) = {
+            let sessions = self.active_sessions.read().await;
+            let session = sessions.get(task_id)
+                .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+            let agent = session.agents.get(agent_id)
+                .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_id))?;
+            let task_description = agent.current_task.clone().unwrap_or_default();
+            (agent.clone(), task_description)
+        };
+
+        // Skip execution for human agents
+        if agent.agent_type == AgentType::Human {
+            return Ok(());
+        }
+
+        println!("Agent '{}' starting work on task: {}", agent_id, task_description);
+
+        // Agent sends progress update
+        self.agent_send_message(
+            task_id,
+            agent_id,
+            None, // Broadcast to all
+            format!("Starting work on: {}", task_description),
+            MessageType::StatusReport,
+            false,
+        ).await?;
+
+        // Auto-save after progress update
+        self.auto_save_session_state(task_id).await?;
+
+        // Build comprehensive prompt for the agent
+        let prompt = self.build_agent_prompt(task_id, agent_id, &task_description).await?;
+
+        // Execute real model call using the agent's configured provider
+        let response_content = self.execute_model_call(&agent, &prompt).await?;
+
+        // Agent sends completion update
+        self.agent_send_message(
+            task_id,
+            agent_id,
+            None,
+            format!("Completed task: {}. Result: {}", task_description, response_content),
+            MessageType::StatusReport,
+            false,
+        ).await?;
+
+        // Final auto-save after completion
+        self.auto_save_session_state(task_id).await?;
+
+        println!("Agent '{}' completed task with response length: {} characters",
+                agent_id, response_content.len());
+
+        Ok(())
+    }
+
+    /// Execute real model call using the agent's configured provider
+    async fn execute_model_call(&self, agent: &CasualAgent, prompt: &str) -> Result<String> {
+        println!("Agent '{}' executing model call with provider: {}, model: {}",
+                agent.id, agent.model_provider, agent.model);
+        println!("Prompt length: {} characters", prompt.len());
+
+        // Get the provider info from config
+        let provider_info = self.get_provider_info(&agent.model_provider).await?;
+
+        // Create model client for the agent
+        let model_client = self.create_model_client(agent, &provider_info).await?;
+
+        // Create prompt for the model
+        let model_prompt = self.create_model_prompt(prompt, &agent.role).await?;
+
+        // Execute the actual model call
+        let response = self.execute_real_model_call(&model_client, &model_prompt).await?;
+
+        println!("Agent '{}' completed model call with response length: {} characters",
+                agent.id, response.len());
+
+        Ok(response)
+    }
+
+    /// Get provider info from config
+    async fn get_provider_info(&self, provider_name: &str) -> Result<crate::model_provider_info::ModelProviderInfo> {
+        let providers = crate::model_provider_info::built_in_model_providers();
+
+        providers.get(provider_name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", provider_name))
+    }
+
+    /// Create model client for agent
+    async fn create_model_client(
+        &self,
+        agent: &CasualAgent,
+        provider_info: &crate::model_provider_info::ModelProviderInfo,
+    ) -> Result<crate::client::ModelClient> {
+        use crate::client_common::Prompt;
+        use crate::default_client::create_client;
+        use crate::model_family::ModelFamily;
+        use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
+        use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+
+        // Create model family based on agent's model
+        let model_family = ModelFamily {
+            family: agent.model.clone(),
+            provider: agent.model_provider.clone(),
+        };
+
+        // Create config for the agent
+        let mut agent_config = (*self.config).clone();
+        agent_config.model = agent.model.clone();
+        agent_config.model_family = model_family.clone();
+
+        // Create OTel event manager
+        let otel_event_manager = crate::otel_event_manager::OtelEventManager::new(
+            agent.session_id.clone(),
+            &agent.role,
+            &agent.model,
+            None,
+            None,
+            false,
+            "multi-agent".to_string(),
+        );
+
+        // Create model client
+        let model_client = crate::client::ModelClient::new(
+            std::sync::Arc::new(agent_config),
+            self.auth_manager.clone(),
+            otel_event_manager,
+            provider_info.clone(),
+            None, // reasoning effort
+            ReasoningSummaryConfig::default(),
+            agent.session_id.clone(),
+        );
+
+        Ok(model_client)
+    }
+
+    /// Create prompt for model
+    async fn create_model_prompt(&self, prompt: &str, role: &str) -> Result<crate::client_common::Prompt> {
+        use crate::client_common::Prompt;
+        use codex_protocol::models::ResponseItem;
+
+        // Create system message with role instructions
+        let system_message = format!(
+            "You are a {} agent in a multi-agent collaboration system. \n\n{}",
+            role, prompt
+        );
+
+        // Create user message with the actual task
+        let user_message = format!(
+            "Please complete your assigned task as a {} agent. Provide a detailed response that can be used by other agents in the collaboration.",
+            role
+        );
+
+        // Build prompt with system and user messages
+        let mut prompt_builder = Prompt::new();
+        prompt_builder.add_system_message(&system_message);
+        prompt_builder.add_user_message(&user_message);
+
+        Ok(prompt_builder)
+    }
+
+    /// Execute real model call using the model client
+    async fn execute_real_model_call(
+        &self,
+        model_client: &crate::client::ModelClient,
+        prompt: &crate::client_common::Prompt,
+    ) -> Result<String> {
+        use crate::client_common::ResponseEvent;
+        use futures::StreamExt;
+
+        // Start streaming response
+        let mut response_stream = model_client.stream(prompt).await?;
+        let mut response_content = String::new();
+
+        // Collect response content from stream
+        while let Some(event_result) = response_stream.rx_event.recv().await {
+            match event_result {
+                Ok(ResponseEvent::OutputTextDelta(delta)) => {
+                    response_content.push_str(&delta);
+                }
+                Ok(ResponseEvent::OutputItemDone(item)) => {
+                    if let codex_protocol::models::ResponseItem::Message { content, .. } = item {
+                        for content_item in content {
+                            if let codex_protocol::models::ContentItem::OutputText { text } = content_item {
+                                response_content.push_str(&text);
+                            }
+                        }
+                    }
+                }
+                Ok(ResponseEvent::Completed { .. }) => {
+                    // Response completed, break out of loop
+                    break;
+                }
+                Ok(_) => {
+                    // Ignore other event types
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Model call failed: {}", e));
+                }
+            }
+        }
+
+        if response_content.is_empty() {
+            return Err(anyhow::anyhow!("No response content received from model"));
+        }
+
+        Ok(response_content)
+    }
+
+    /// Build a comprehensive prompt for an agent
+    async fn build_agent_prompt(&self, task_id: &str, agent_id: &str, task_description: &str) -> Result<String> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+        let agent = session.agents.get(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_id))?;
+
+        let mut prompt = String::new();
+
+        // Add agent role and instructions
+        prompt.push_str(&format!("You are a {} ({})\n", agent.role, agent_id));
+        prompt.push_str(&format!("Expertise: {}\n", agent.expertise.join(", ")));
+
+        // Add task description
+        prompt.push_str(&format!("\nTask: {}\n", task_description));
+
+        // Add context from shared state
+        prompt.push_str(&format!("\nOverall Objective: {}\n", session.objective));
+
+        // Add recent messages for context
+        if !session.messages.is_empty() {
+            prompt.push_str("\nRecent Context:\n");
+            for message in session.messages.iter().rev().take(5) {
+                let to_agent = message.to_agent.as_ref().map(|a| format!("→ {}", a)).unwrap_or_default();
+                prompt.push_str(&format!("- {} {}: {}\n", message.from_agent, to_agent, message.content));
+            }
+        }
+
+        // Add available artifacts
+        if !session.artifacts.is_empty() {
+            prompt.push_str("\nAvailable Artifacts:\n");
+            for artifact in session.artifacts.values() {
+                prompt.push_str(&format!("- {}: {}\n", artifact.name, artifact.content));
+            }
+        }
+
+        // Add task-specific guidance
+        prompt.push_str("\nPlease provide a detailed response to complete this task. Focus on your area of expertise and provide actionable output.");
+
+        Ok(prompt)
+    }
+
+    /// Start the planning phase (background process)
+    async fn start_planning_phase(&self, task_id: &str) -> Result<()> {
+        // Update session status
+        {
+            let mut sessions = self.active_sessions.write().await;
+            if let Some(session) = sessions.get_mut(task_id) {
+                session.status = TaskStatus::Planning;
+            }
+        }
+
+        println!("Planning phase started for task: {}", task_id);
+
+        // Get the objective for planning
+        let objective = {
+            let sessions = self.active_sessions.read().await;
+            sessions.get(task_id)
+                .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?
+                .objective.clone()
+        };
+
+        // Use LLM to plan and create dynamic agent team
+        let agent_plan = self.generate_agent_plan(&objective).await?;
+
+        // Create the dynamic agent team based on LLM planning
+        self.create_dynamic_team(task_id, &agent_plan).await?;
+
+        // Display planned roles and tasks to user for confirmation
+        println!("\n📋 PLANNING COMPLETED - AWAITING USER CONFIRMATION");
+        println!("Task: {}", objective);
+        println!("\nPlanned Roles:");
+        for (i, role) in agent_plan.roles.iter().enumerate() {
+            if role.agent_type == AgentType::AI {
+                println!("  {}. {} ({})", i + 1, role.role, role.model_provider);
+                println!("     Expertise: {}", role.expertise.join(", "));
+                println!("     Primary Task: {}", role.primary_task);
+            }
+        }
+        println!("\nPlanned Tasks:");
+        for (i, task) in agent_plan.task_breakdown.iter().enumerate() {
+            println!("  {}. {}", i + 1, task);
+        }
+
+        // Wait for user confirmation before starting execution
+        println!("\n🤔 Do you want to proceed with this plan? (y/n/r)");
+        println!("   y = Yes, start execution");
+        println!("   n = No, cancel task");
+        println!("   r = Request replanning");
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+
+        match input.as_str() {
+            "y" | "yes" => {
+                // User confirmed - proceed with execution
+                println!("✅ User confirmed - starting execution...");
+
+                // Update to in-progress
+                {
+                    let mut sessions = self.active_sessions.write().await;
+                    if let Some(session) = sessions.get_mut(task_id) {
+                        session.status = TaskStatus::InProgress;
+                    }
+                }
+
+                println!("Dynamic agent team created: {:?}", agent_plan.roles);
+                println!("Agents starting collaboration...");
+
+                // Start AI agent collaboration in background
+                self.start_agent_collaboration(task_id).await?;
+            }
+            "n" | "no" => {
+                // User cancelled
+                println!("❌ User cancelled - task stopped.");
+                {
+                    let mut sessions = self.active_sessions.write().await;
+                    if let Some(session) = sessions.get_mut(task_id) {
+                        session.status = TaskStatus::Failed;
+                    }
+                }
+                return Ok(());
+            }
+            "r" | "replan" => {
+                // User requested replanning
+                println!("🔄 User requested replanning - regenerating plan...");
+                return Box::pin(self.start_planning_phase(task_id)).await;
+            }
+            _ => {
+                // Invalid input - treat as cancellation
+                println!("❌ Invalid input - task cancelled.");
+                {
+                    let mut sessions = self.active_sessions.write().await;
+                    if let Some(session) = sessions.get_mut(task_id) {
+                        session.status = TaskStatus::Failed;
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate agent plan using LLM analysis with dynamic role planning
+    async fn generate_agent_plan(&self, objective: &str) -> Result<AgentPlan> {
+        // Use dynamic role planning from AgentManager
+        let agent_manager = crate::multi_agent::AgentManager::new((*self.config).clone());
+        let role_analysis = agent_manager.analyze_objective(objective).await?;
+
+        let mut roles = Vec::new();
+
+        // Convert role analysis to agent roles
+        for role_assignment in role_analysis.required_roles {
+            if let Some(role_def) = agent_manager.get_role_definition(&role_assignment.role_name) {
+                roles.push(AgentRole {
+                    role: role_assignment.role_name.clone(),
+                    expertise: role_def.capabilities.clone(),
+                    primary_task: role_assignment.customized_description.clone(),
+                    model_provider: role_def.suggested_provider.clone(),
+                    model: role_def.suggested_model.clone(),
+                    agent_type: AgentType::AI,
+                });
+            }
+        }
+
+        // Always include human agent for casual engagement
+        roles.push(AgentRole {
+            role: "Human Collaborator".to_string(),
+            expertise: vec!["domain-knowledge".to_string(), "decision-making".to_string(), "guidance".to_string()],
+            primary_task: "Provide guidance, data, and domain expertise".to_string(),
+            model_provider: "human".to_string(),
+            model: "human".to_string(),
+            agent_type: AgentType::Human,
+        });
+
+        Ok(AgentPlan {
+            roles,
+            task_breakdown: role_analysis.suggested_tasks,
+        })
+    }
+
+    /// Create dynamic agent team based on LLM planning
+    async fn create_dynamic_team(&self, task_id: &str, agent_plan: &AgentPlan) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions.get_mut(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        // Create agents based on the LLM plan
+        for (index, role) in agent_plan.roles.iter().enumerate() {
+            let agent_id = format!("{}-{}", role.role.to_lowercase().replace(" ", "-"), index + 1);
+
+            // Create dedicated session for each AI agent
+            let (session_id, conversation_manager, rollout_recorder) = if role.agent_type == AgentType::AI {
+                let agent_config = (*self.config).clone();
+                let new_conversation = self.conversation_manager.new_conversation(agent_config).await?;
+                let recorder = Arc::new(RolloutRecorder::new(
+                    &self.config,
+                    crate::rollout::RolloutRecorderParams::new(
+                        new_conversation.conversation_id,
+                        Some(format!("Agent {}: {}", role.role, role.primary_task)),
+                        codex_protocol::protocol::SessionSource::Cli,
+                    ),
+                ).await?);
+                (new_conversation.conversation_id, Some(self.conversation_manager.clone()), Some(recorder))
+            } else {
+                // Human agents don't need dedicated sessions
+                (ConversationId::new(), None, None)
+            };
+
+            let agent = CasualAgent {
+                id: agent_id.clone(),
+                role: role.role.clone(),
+                expertise: role.expertise.clone(),
+                status: if role.role == "Human Collaborator" {
+                    AgentStatus::Idle
+                } else {
+                    AgentStatus::Working
+                },
+                current_task: Some(role.primary_task.clone()),
+                agent_type: if role.role == "Human Collaborator" {
+                    AgentType::Human
+                } else {
+                    AgentType::AI
+                },
+                model_provider: role.model_provider.clone(),
+                model: role.model.clone(),
+                session_id,
+                conversation_manager,
+                rollout_recorder,
+            };
+
+            session.agents.insert(agent_id, agent);
+        }
+
+        // Add initial coordination message
+        let message = CasualMessage {
+            id: Uuid::new_v4().to_string(),
+            timestamp: chrono::Utc::now(),
+            from_agent: "system".to_string(),
+            to_agent: None,
+            content: format!("Dynamic agent team created with {} roles. Starting collaboration...", agent_plan.roles.len()),
+            message_type: MessageType::Coordination,
+            requires_human_attention: false,
+        };
+        session.messages.push_back(message);
+
+        Ok(())
+    }
+
+    /// Optimize token usage by sharing information locally between agents
+    async fn share_information_locally(&self, task_id: &str, from_agent: &str, content: &str, target_agents: Option<Vec<String>>) -> Result<()> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        // Share information with specific agents or all agents
+        let target_agents = target_agents.unwrap_or_else(|| {
+            session.agents.keys()
+                .filter(|&agent_id| agent_id != from_agent)
+                .cloned()
+                .collect()
+        });
+
+        for agent_id in target_agents {
+            if session.agents.contains_key(&agent_id) {
+                // Create a local information sharing message
+                let message = CasualMessage {
+                    id: Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    from_agent: from_agent.to_string(),
+                    to_agent: Some(agent_id.clone()),
+                    content: format!("Local info share: {}", content),
+                    message_type: MessageType::Coordination,
+                    requires_human_attention: false,
+                };
+
+                // Add to session messages
+                drop(sessions); // Release read lock
+                {
+                    let mut sessions = self.active_sessions.write().await;
+                    if let Some(session) = sessions.get_mut(task_id) {
+                        session.messages.push_back(message);
+                    }
+                }
+                break; // Only add one message per target agent
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Minimize LLM requests by using cached information when possible
+    async fn get_cached_information(&self, task_id: &str, query: &str) -> Option<String> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)?;
+
+        // Search through recent messages for relevant information
+        for message in session.messages.iter().rev() {
+            if message.content.contains(query) && !message.from_agent.contains("human") {
+                return Some(message.content.clone());
+            }
+        }
+
+        // Search through artifacts for relevant information
+        for artifact in session.artifacts.values() {
+            if artifact.content.contains(query) {
+                return Some(format!("Found in artifact '{}': {}", artifact.name, artifact.content));
+            }
+        }
+
+        None
+    }
+
+    /// Clone the orchestrator for background tasks
+    fn clone(&self) -> Self {
+        Self {
+            active_sessions: self.active_sessions.clone(),
+            message_queue: self.message_queue.clone(),
+            config: self.config.clone(),
+            conversation_manager: self.conversation_manager.clone(),
+            auth_manager: self.auth_manager.clone(),
+        }
+    }
+
+    /// Save session state for persistence
+    pub async fn save_session_state(&self, task_id: &str) -> Result<()> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        // Save main session state
+        if let Some(recorder) = &session.rollout_recorder {
+            recorder.flush().await?;
+        }
+
+        // Save individual agent sessions
+        for agent in session.agents.values() {
+            if let Some(recorder) = &agent.rollout_recorder {
+                recorder.flush().await?;
+            }
+        }
+
+        println!("Session state saved for task: {}", task_id);
+        Ok(())
+    }
+
+    /// Auto-save session state periodically (called during agent execution)
+    async fn auto_save_session_state(&self, task_id: &str) -> Result<()> {
+        // Only save if session exists and has persistence enabled
+        let session_exists = {
+            let sessions = self.active_sessions.read().await;
+            sessions.contains_key(task_id)
+        };
+
+        if session_exists {
+            if let Err(e) = self.save_session_state(task_id).await {
+                eprintln!("Auto-save failed for task {}: {}", task_id, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resume session from persistence
+    pub async fn resume_session(&self, task_id: &str, rollout_path: PathBuf) -> Result<CasualTaskSession> {
+        // Load rollout history to get the conversation ID and session metadata
+        let _initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+
+        // Create new session with resumed history
+        let session_config = (*self.config).clone();
+        let _new_conversation = self.conversation_manager.resume_conversation_from_rollout(
+            session_config,
+            rollout_path.clone(),
+            self.auth_manager.clone(),
+        ).await?;
+
+        let rollout_recorder = Arc::new(RolloutRecorder::new(
+            &self.config,
+            crate::rollout::RolloutRecorderParams::resume(rollout_path.clone()),
+        ).await?);
+
+        // Extract objective from rollout metadata if available
+        let objective = match &_initial_history {
+            codex_protocol::protocol::InitialHistory::Resumed(_resumed_history) => {
+                // Try to find the objective in the rollout history
+                // For now, use a placeholder - in a real implementation, we'd parse the history
+                "Resumed multi-agent task".to_string()
+            }
+            _ => "Resumed session".to_string(),
+        };
+
+        let session = CasualTaskSession {
+            task_id: task_id.to_string(),
+            objective,
+            status: TaskStatus::InProgress,
+            created_at: chrono::Utc::now(),
+            agents: HashMap::new(),
+            messages: VecDeque::new(),
+            artifacts: HashMap::new(),
+            human_engagement_count: 0,
+            session_persistence_path: Some(rollout_path),
+            conversation_manager: Some(self.conversation_manager.clone()),
+            rollout_recorder: Some(rollout_recorder),
+        };
+
+        {
+            let mut sessions = self.active_sessions.write().await;
+            sessions.insert(task_id.to_string(), session.clone());
+        }
+
+        println!("Session resumed for task: {}", task_id);
+        Ok(session)
+    }
+
+    /// Get session persistence path
+    pub async fn get_session_persistence_path(&self, task_id: &str) -> Result<Option<PathBuf>> {
+        let sessions = self.active_sessions.read().await;
+        let session = sessions.get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+
+        Ok(session.session_persistence_path.clone())
+    }
+}
+
+/// Public API for casual multi-agent collaboration
+pub mod api {
+    use super::*;
+    use std::sync::Arc;
+
+    static ORCHESTRATOR: tokio::sync::OnceCell<Arc<CasualMultiAgentOrchestrator>> = tokio::sync::OnceCell::const_new();
+
+    /// Initialize the casual multi-agent system
+    pub async fn init(config: Arc<Config>) -> Result<()> {
+        let orchestrator = CasualMultiAgentOrchestrator::new(config)?;
+        ORCHESTRATOR.set(Arc::new(orchestrator))
+            .map_err(|_| anyhow::anyhow!("Casual multi-agent system already initialized"))?;
+        Ok(())
+    }
+
+    /// Publish a new task for casual multi-agent collaboration
+    pub async fn publish_task(objective: String) -> Result<CasualTaskSession> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.publish_task(objective).await
+    }
+
+    /// Casual human engagement - no formal joining required
+    pub async fn casually_engage(task_id: &str, action: CasualAction) -> Result<()> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.casually_engage(task_id, action).await
+    }
+
+    /// Quick progress peek - no commitment required
+    pub async fn peek_at_progress(task_id: &str) -> Result<TaskSnapshot> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.peek_at_progress(task_id).await
+    }
+
+    /// Get recent messages for casual checking
+    pub async fn get_recent_messages(task_id: &str, limit: usize) -> Result<Vec<CasualMessage>> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.get_recent_messages(task_id, limit).await
+    }
+
+    /// Get detailed task status with agent breakdown
+    pub async fn get_detailed_status(task_id: &str) -> Result<DetailedTaskStatus> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.get_detailed_status(task_id).await
+    }
+
+    /// Save session state for persistence
+    pub async fn save_session_state(task_id: &str) -> Result<()> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.save_session_state(task_id).await
+    }
+
+    /// Resume session from persistence
+    pub async fn resume_session(task_id: &str, rollout_path: PathBuf) -> Result<CasualTaskSession> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.resume_session(task_id, rollout_path).await
+    }
+
+    /// Get session persistence path
+    pub async fn get_session_persistence_path(task_id: &str) -> Result<Option<PathBuf>> {
+        let orchestrator = ORCHESTRATOR.get()
+            .ok_or_else(|| anyhow::anyhow!("Casual multi-agent system not initialized"))?;
+        orchestrator.get_session_persistence_path(task_id).await
+    }
+}

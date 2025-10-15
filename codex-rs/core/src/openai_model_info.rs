@@ -72,6 +72,12 @@ pub(crate) fn get_model_info(model_family: &ModelFamily) -> Option<ModelInfo> {
 
         _ if slug.starts_with("codex-") => Some(ModelInfo::new(272_000, 128_000)),
 
+        // DeepSeek models
+        // https://platform.deepseek.com/api-docs/
+        "deepseek-chat" | "deepseek-coder" => Some(ModelInfo::new(128_000, 32_768)),
+        "deepseek-reasoner" => Some(ModelInfo::new(128_000, 32_768)),
+        _ if slug.starts_with("deepseek-") => Some(ModelInfo::new(128_000, 32_768)),
+
         _ => None,
     }
 }

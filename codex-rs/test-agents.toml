@@ -1,0 +1,23 @@
+[[agents]]
+name = "rust-developer"
+role = "Rust Backend Developer"
+capabilities = ["rust", "backend", "api-design", "database"]
+model_provider = "deepseek"
+model = "deepseek-coder"
+instructions = "Focus on efficient, safe Rust code for backend services and APIs"
+
+[[agents]]
+name = "ui-designer"
+role = "UI/UX Designer"
+capabilities = ["design", "ui", "ux", "frontend"]
+model_provider = "deepseek"
+model = "deepseek-chat"
+instructions = "Focus on user interface design, user experience, and frontend development"
+
+[[agents]]
+name = "devops-engineer"
+role = "DevOps Engineer"
+capabilities = ["devops", "deployment", "infrastructure", "monitoring"]
+model_provider = "openai"
+model = "gpt-4o"
+instructions = "Focus on deployment, infrastructure, monitoring, and CI/CD pipelines"

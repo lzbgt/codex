@@ -299,6 +299,26 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 requires_openai_auth: true,
             },
         ),
+        (
+            "deepseek",
+            P {
+                name: "DeepSeek".into(),
+                base_url: std::env::var("DEEPSEEK_BASE_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| Some("https://api.deepseek.com".to_string())),
+                env_key: Some("DEEPSEEK_API_KEY".to_string()),
+                env_key_instructions: Some("Get your API key from https://platform.deepseek.com/api_keys".to_string()),
+                wire_api: WireApi::Chat,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+            },
+        ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
     ]
     .into_iter()

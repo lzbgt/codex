@@ -94,6 +94,10 @@ enum Subcommand {
     #[clap(name = "cloud", alias = "cloud-tasks")]
     Cloud(CloudTasksCli),
 
+    /// Casual multi-agent collaboration (dynamic team creation)
+    #[clap(visible_alias = "multi")]
+    MultiAgent(CasualMultiAgentCommand),
+
     /// Internal: run the responses API proxy.
     #[clap(hide = true)]
     ResponsesApiProxy(ResponsesApiProxyArgs),
@@ -195,6 +199,26 @@ struct GenerateTsCommand {
     #[arg(short = 'p', long = "prettier", value_name = "PRETTIER_BIN")]
     prettier: Option<PathBuf>,
 }
+
+
+#[derive(Debug, Parser)]
+struct CasualMultiAgentCommand {
+    /// Objective/task for casual multi-agent collaboration
+    #[arg(short, long)]
+    objective: String,
+
+    /// Monitor mode - continuously watch progress
+    #[arg(short, long)]
+    monitor: bool,
+
+    /// Interactive mode - allow casual human engagement
+    #[arg(short, long)]
+    interactive: bool,
+
+    #[clap(skip)]
+    config_overrides: CliConfigOverrides,
+}
+
 
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
     let AppExitInfo {
@@ -381,6 +405,13 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         Some(Subcommand::GenerateTs(gen_cli)) => {
             codex_protocol_ts::generate_ts(&gen_cli.out_dir, gen_cli.prettier.as_deref())?;
         }
+        Some(Subcommand::MultiAgent(mut multi_cli)) => {
+            prepend_config_flags(
+                &mut multi_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            run_casual_multi_agent_command(multi_cli).await?;
+        }
     }
 
     Ok(())
@@ -475,6 +506,114 @@ fn print_completion(cmd: CompletionCommand) {
     let name = "codex";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
+
+
+/// Run casual multi-agent collaboration command
+async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> anyhow::Result<()> {
+    use codex_core::multi_agent::casual::api;
+    use codex_core::multi_agent::casual::CasualAction;
+    use codex_core::config::Config;
+    use std::sync::Arc;
+
+    // Load configuration
+    let overrides = casual_cli.config_overrides.parse_overrides()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let config = Config::load_with_cli_overrides(
+        overrides,
+        codex_core::config::ConfigOverrides::default()
+    ).await?;
+
+    let config = Arc::new(config);
+
+    // Initialize casual multi-agent system
+    api::init(config.clone()).await?;
+
+    println!("🚀 Starting casual multi-agent collaboration");
+    println!("Objective: {}", casual_cli.objective);
+    println!("Mode: {}", if casual_cli.interactive { "Interactive" } else { "Background" });
+    println!();
+
+    // Publish the task
+    let session = api::publish_task(casual_cli.objective).await?;
+    println!("✅ Task published successfully!");
+    println!("Task ID: {}", session.task_id);
+    println!("Status: Planning phase...");
+    println!();
+
+    if casual_cli.monitor || casual_cli.interactive {
+        // Monitor mode - continuously watch progress
+        let mut last_progress = 0;
+
+        loop {
+            // Get current progress
+            let snapshot = api::peek_at_progress(&session.task_id).await?;
+
+            if snapshot.progress_percentage != last_progress {
+                println!("📊 Progress Update:");
+                println!("  Status: {}", snapshot.status);
+                println!("  Progress: {}%", snapshot.progress_percentage);
+                println!("  Active Agents: {:?}", snapshot.active_agents);
+                println!("  Recent Activity: {}", snapshot.recent_activity);
+                println!("  Human Attention Needed: {}", snapshot.human_attention_needed);
+                println!();
+
+                last_progress = snapshot.progress_percentage;
+            }
+
+            // Check if human attention is needed or if in interactive mode
+            if snapshot.human_attention_needed || casual_cli.interactive {
+                // Get recent messages
+                let recent_messages = api::get_recent_messages(&session.task_id, 5).await?;
+
+                if !recent_messages.is_empty() {
+                    println!("💬 Recent Messages:");
+                    for msg in recent_messages.iter().rev() {
+                        let to_agent = msg.to_agent.as_ref().map(|a| format!("→ {}", a)).unwrap_or_default();
+                        println!("  {} {}: {}", msg.from_agent, to_agent, msg.content);
+                    }
+                    println!();
+                }
+
+                // In interactive mode, allow casual human engagement
+                if casual_cli.interactive && snapshot.human_attention_needed {
+                    println!("🤔 Human attention needed! Press Enter to provide guidance...");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+
+                    if !input.trim().is_empty() {
+                        api::casually_engage(
+                            &session.task_id,
+                            CasualAction::QuickGuidance {
+                                message: input.trim().to_string(),
+                                to_agent: None,
+                            }
+                        ).await?;
+                        println!("✅ Guidance provided!");
+                        println!();
+                    }
+                }
+            }
+
+            // Check if task is completed
+            if snapshot.status == "Completed" || snapshot.status == "Failed" {
+                println!("🎉 Task completed!");
+                break;
+            }
+
+            // Wait before next check
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    } else {
+        // Background mode - just show initial status and exit
+        println!("🔮 Task is running in background mode");
+        println!("Use 'codex casual --monitor --task-id {}' to monitor progress", session.task_id);
+        println!("Use 'codex casual --interactive --task-id {}' for interactive engagement", session.task_id);
+    }
+
+    Ok(())
+}
+
+
 
 #[cfg(test)]
 mod tests {
