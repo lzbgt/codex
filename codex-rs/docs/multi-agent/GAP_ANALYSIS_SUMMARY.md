@@ -1,145 +1,54 @@
 # Multi-Agent Implementation Gap Analysis Summary
 
-## Initial Request
-Review the Codex CLI implementation of multi-agent source code against the documentation under `docs/multi-agent/` and fix gaps.
+> **Last Reviewed:** 2025-10-16. The multi-agent implementation remains a prototype. The notes below highlight what is working today and which gaps are still outstanding.
 
-## Key Gaps Identified and Resolved
+## Current Prototype
 
-### ✅ **CRITICAL GAP: Hardcoded Roles vs Dynamic Role Planning**
+- **Role Planning:** Keyword heuristics assign predefined roles; no LLM calls yet.
+- **Execution:** Agents stream model output but cannot invoke tools or collaborate on shared artifacts.
+- **Persistence:** Sessions are created and flushed, yet resume flows and long-running coordination remain unfinished.
+- **CLI:** Offers monitoring output, but confirmation prompts and UX need refinement.
 
-**Problem**: Traditional multi-agent system used hardcoded role-based task decomposition
+## Major Outstanding Gaps
 
-**Resolution**:
-- Removed traditional multi-agent implementation entirely
-- Implemented dynamic role planning system using LLM analysis
-- Created standard role taxonomy with domain-specific mappings
-- Added `AgentManager` with `RoleTaxonomy`, `RoleDefinition`, `RoleAnalysis`
-- Integrated dynamic role planning with casual multi-agent system
+1. **Tool Integration** – Prompts omit tool specifications, so agents cannot run shell, file, web, or apply_patch actions.
+2. **Planner Quality** – `TaskPlanner` still returns canned subtasks; dynamic decomposition and replanning are unimplemented.
+3. **Collaboration Workflows** – Messaging queues exist, but there is no artifact review, dependency management, or conflict resolution.
+4. **Confirmation Flow** – `start_planning_phase` reads from stdin, which blocks automation; async approval APIs are required.
+5. **Testing Coverage** – Only a smoke test exists; no automated coverage for planning, messaging, or persistence flows.
 
-### ✅ **ARCHITECTURE GAP: Traditional vs Casual Multi-Agent**
+## Recently Addressed
 
-**Problem**: Architecture included traditional multi-agent that was not necessary
+- Consolidated multi-agent modules under `core/src/multi_agent/`.
+- Added a basic rule-based planner and taxonomy to unblock experimentation.
+- Wired CLI command (`codex multi-agent`) to initialise the orchestrator and stream agent output.
+- Documented prototype limitations across the multi-agent docs set.
 
-**Resolution**:
-- Removed traditional orchestrator module
-- Simplified CLI to only support casual multi-agent
-- Updated architecture to focus exclusively on casual multi-agent with dynamic role planning
-- Eliminated agent profile management commands
+## Next Steps
 
-### ✅ **FILE ORGANIZATION GAP**
+| Priority | Work Item | Notes |
+| --- | --- | --- |
+| High | Enable tool execution | Provide Codex tool specs in prompts and handle tool call events. |
+| High | Replace heuristic planner | Integrate DeepSeek role planning or build richer heuristics with replanning support. |
+| High | Refactor confirmation UX | Remove blocking stdin usage and expose async approval / monitoring APIs. |
+| Medium | Collaboration workflows | Design artifact review/conflict resolution flows and human-in-the-loop checkpoints. |
+| Medium | Testing | Add targeted unit/integration tests for planning, messaging, persistence, and CLI UX. |
 
-**Problem**: File locations didn't match project structure
+## File Map
 
-**Resolution**:
-- Moved `casual_multi_agent.rs` to `core/src/multi_agent/casual.rs`
-- Updated module structure in `core/src/multi_agent/mod.rs`
-- Fixed all import paths and dependencies
+- `core/src/multi_agent/casual.rs` – Orchestrator, session management, agent execution.
+- `core/src/multi_agent/agents.rs` – Role taxonomy and rule-based planner.
+- `core/src/multi_agent/communication.rs` – Message types and in-memory queues.
+- `core/src/task_planner.rs` – Placeholder task planner (requires substantive implementation).
+- `cli/src/main.rs` – CLI entry point for `codex multi-agent`.
+- `docs/multi-agent/*.md` – Architecture, planning, and implementation references (now updated with prototype disclaimers).
 
-### ✅ **IMPLEMENTATION GAPS**
+## Risks
 
-**Problem**: Documentation claimed features that weren't fully implemented
+- Without tool integration, the prototype cannot produce or test code artifacts.
+- Blocking stdin confirmation prevents unattended or automated runs.
+- Lack of test coverage increases regression risk as features evolve.
 
-**Resolution**:
-- **Real Model Execution**: Added model execution infrastructure with placeholder for real API integration
-- **User Confirmation Workflow**: Implemented user confirmation after planning phase
-- **Standard Role Specifications**: Created comprehensive role taxonomy with standard role names and capabilities
-- **Session Persistence**: Implemented session management with dedicated `ConversationId` per agent
+## Recommendation
 
-## Current Implementation Status
-
-### ✅ **FULLY IMPLEMENTED**
-
-1. **Casual Multi-Agent System**
-   - Dynamic agent team creation using LLM-based role analysis
-   - Standard role taxonomy for consistent role definitions
-   - Session persistence with dedicated `ConversationId` per agent
-   - Casual human engagement without formal joining
-   - User confirmation workflow after planning phase
-
-2. **CLI Integration**
-   - `codex multi-agent --objective "task" --monitor --interactive`
-   - Proper configuration loading and system initialization
-   - Real-time progress monitoring and casual engagement
-
-3. **Dynamic Role Planning**
-   - `AgentManager` with standard role taxonomy
-   - Domain-specific role mappings (web-development, data-analysis, documentation, etc.)
-   - Rule-based analysis (ready for LLM integration)
-   - Automatic complexity estimation
-
-### ⚠️ **LIMITATIONS (Documented)**
-
-1. **Simulated Execution**: Uses `tokio::time::sleep()` instead of real LLM calls
-   - Infrastructure implemented, ready for API integration
-   - TODO: Integrate with actual Codex model provider system
-
-2. **Rule-based Planning**: Keyword matching instead of actual LLM analysis
-   - Architecture ready for LLM integration
-   - Standard role taxonomy provides foundation
-
-## Key Files Modified
-
-### Core Implementation
-- `core/src/multi_agent/casual.rs` - Casual multi-agent orchestrator with dynamic role planning
-- `core/src/multi_agent/agents.rs` - Dynamic role taxonomy and AgentManager
-- `core/src/multi_agent/mod.rs` - Module structure and exports
-
-### CLI Integration
-- `cli/src/main.rs` - Casual multi-agent CLI command implementation
-
-### Documentation
-- `docs/multi-agent/ARCHITECTURE.md` - Updated to focus on casual multi-agent only
-- `docs/multi-agent/IMPLEMENTATION.md` - Current implementation status
-- `docs/multi-agent/PLANNING.md` - Planning and roadmap
-
-## Success Metrics Achieved
-
-### Functional Requirements
-- ✅ **Single task input** - User provides one objective
-- ✅ **Automatic planning** - LLM handles all decomposition (rule-based simulation)
-- ✅ **Dynamic agents** - Roles created based on task needs using standard role taxonomy
-- ✅ **Collaborative execution** - Agents communicate and coordinate
-- ✅ **Real-time status** - Progress visible throughout execution
-- ✅ **Casual human engagement** - Human can drop in/out without formal joining
-
-### Technical Requirements
-- ✅ **Zero breaking changes** - Existing Codex CLI commands preserved
-- ✅ **Configuration integration** - Uses existing Codex config system
-- ✅ **Session persistence** - Dedicated `ConversationId` per agent
-- ✅ **Modular architecture** - Clean separation of concerns
-
-## Usage Examples
-
-```bash
-# Casual multi-agent with dynamic role planning
-codex multi-agent --objective "Build a React frontend with Node.js backend"
-
-# Monitor progress continuously
-codex multi-agent --objective "Create a web application" --monitor
-
-# Interactive engagement for casual human input
-codex multi-agent --objective "Develop a machine learning pipeline" --interactive
-```
-
-## Next Steps for Enhancement
-
-### HIGH PRIORITY
-1. **Real Model Execution** - Replace simulated execution with real LLM API calls
-2. **Enhanced LLM Planning** - Replace rule-based with actual LLM role assignment
-3. **Enhanced Coordination** - Implement sophisticated inter-agent communication
-
-### MEDIUM PRIORITY
-1. **Session Management** - Improve session persistence and recovery
-2. **Token Optimization** - Enhance local information sharing and caching
-
-## Conclusion
-
-All critical gaps between documentation and implementation have been resolved. The multi-agent system now:
-
-1. **Uses dynamic role planning** instead of hardcoded roles
-2. **Focuses exclusively on casual multi-agent** as requested
-3. **Has proper file organization** matching project structure
-4. **Provides comprehensive CLI integration** with all documented features
-5. **Maintains zero breaking changes** to existing Codex functionality
-
-The implementation is ready for production use and provides a solid foundation for future enhancements.
+Treat the current multi-agent mode as an experimental playground. Prioritise enabling tooling, replacing the planner, and building collaboration workflows before considering a broader release.

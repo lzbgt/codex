@@ -13,5 +13,8 @@ pub mod communication;
 
 // Re-export main types for easy access
 pub use agents::AgentManager;
-pub use casual::{CasualMultiAgentOrchestrator, CasualTaskSession, CasualAction, CasualAgent};
+pub use casual::CasualAction;
+pub use casual::CasualAgent;
+pub use casual::CasualMultiAgentOrchestrator;
+pub use casual::CasualTaskSession;
 pub use communication::AgentMessage;

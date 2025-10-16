@@ -3,18 +3,14 @@
 //! This module provides dynamic agent creation based on LLM analysis
 //! and standard role definitions for flexible multi-agent collaboration.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use anyhow::Result;
+use serde::Deserialize;
+use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::Config;
-use crate::client::ModelClient;
-use crate::client_common::Prompt;
-use crate::model_provider_info::ModelProviderInfo;
 use crate::auth::AuthManager;
-use crate::otel_event_manager::OtelEventManager;
-use codex_protocol::ConversationId;
+use crate::config::Config;
 
 /// Agent profile for dynamic role planning
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +54,8 @@ pub struct RoleDefinition {
 pub struct RoleAnalysis {
     /// Primary domain of the objective
     pub primary_domain: String,
+    /// Primary framework used for role planning
+    pub primary_framework: String,
     /// Required roles for this objective
     pub required_roles: Vec<RoleAssignment>,
     /// Suggested task breakdown
@@ -111,202 +109,242 @@ impl AgentManager {
         let mut domain_mappings = HashMap::new();
 
         // Technical Development Roles
-        roles.insert("backend-developer".to_string(), RoleDefinition {
-            name: "backend-developer".to_string(),
-            description: "Develops server-side logic, APIs, and database interactions".to_string(),
-            capabilities: vec![
-                "api-design".to_string(),
-                "database".to_string(),
-                "server-side".to_string(),
-                "authentication".to_string(),
-                "performance".to_string(),
-            ],
-            suggested_provider: "deepseek".to_string(),
-            suggested_model: "deepseek-coder".to_string(),
-            common_tasks: vec![
-                "Implement REST API endpoints".to_string(),
-                "Design database schema".to_string(),
-                "Create authentication system".to_string(),
-                "Optimize server performance".to_string(),
-            ],
-        });
+        roles.insert(
+            "backend-developer".to_string(),
+            RoleDefinition {
+                name: "backend-developer".to_string(),
+                description: "Develops server-side logic, APIs, and database interactions"
+                    .to_string(),
+                capabilities: vec![
+                    "api-design".to_string(),
+                    "database".to_string(),
+                    "server-side".to_string(),
+                    "authentication".to_string(),
+                    "performance".to_string(),
+                ],
+                suggested_provider: "deepseek".to_string(),
+                suggested_model: "deepseek-coder".to_string(),
+                common_tasks: vec![
+                    "Implement REST API endpoints".to_string(),
+                    "Design database schema".to_string(),
+                    "Create authentication system".to_string(),
+                    "Optimize server performance".to_string(),
+                ],
+            },
+        );
 
-        roles.insert("frontend-developer".to_string(), RoleDefinition {
-            name: "frontend-developer".to_string(),
-            description: "Creates user interfaces and client-side functionality".to_string(),
-            capabilities: vec![
-                "ui-design".to_string(),
-                "javascript".to_string(),
-                "react".to_string(),
-                "css".to_string(),
-                "user-experience".to_string(),
-            ],
-            suggested_provider: "deepseek".to_string(),
-            suggested_model: "deepseek-chat".to_string(),
-            common_tasks: vec![
-                "Create responsive UI components".to_string(),
-                "Implement user interactions".to_string(),
-                "Optimize frontend performance".to_string(),
-                "Ensure cross-browser compatibility".to_string(),
-            ],
-        });
+        roles.insert(
+            "frontend-developer".to_string(),
+            RoleDefinition {
+                name: "frontend-developer".to_string(),
+                description: "Creates user interfaces and client-side functionality".to_string(),
+                capabilities: vec![
+                    "ui-design".to_string(),
+                    "javascript".to_string(),
+                    "react".to_string(),
+                    "css".to_string(),
+                    "user-experience".to_string(),
+                ],
+                suggested_provider: "deepseek".to_string(),
+                suggested_model: "deepseek-chat".to_string(),
+                common_tasks: vec![
+                    "Create responsive UI components".to_string(),
+                    "Implement user interactions".to_string(),
+                    "Optimize frontend performance".to_string(),
+                    "Ensure cross-browser compatibility".to_string(),
+                ],
+            },
+        );
 
         // Data & Analytics Roles
-        roles.insert("data-scientist".to_string(), RoleDefinition {
-            name: "data-scientist".to_string(),
-            description: "Analyzes data, builds models, and provides insights".to_string(),
-            capabilities: vec![
-                "data-analysis".to_string(),
-                "machine-learning".to_string(),
-                "statistics".to_string(),
-                "python".to_string(),
-                "visualization".to_string(),
-            ],
-            suggested_provider: "deepseek".to_string(),
-            suggested_model: "deepseek-reasoner".to_string(),
-            common_tasks: vec![
-                "Analyze datasets for patterns".to_string(),
-                "Build predictive models".to_string(),
-                "Create data visualizations".to_string(),
-                "Generate insights from data".to_string(),
-            ],
-        });
+        roles.insert(
+            "data-scientist".to_string(),
+            RoleDefinition {
+                name: "data-scientist".to_string(),
+                description: "Analyzes data, builds models, and provides insights".to_string(),
+                capabilities: vec![
+                    "data-analysis".to_string(),
+                    "machine-learning".to_string(),
+                    "statistics".to_string(),
+                    "python".to_string(),
+                    "visualization".to_string(),
+                ],
+                suggested_provider: "deepseek".to_string(),
+                suggested_model: "deepseek-reasoner".to_string(),
+                common_tasks: vec![
+                    "Analyze datasets for patterns".to_string(),
+                    "Build predictive models".to_string(),
+                    "Create data visualizations".to_string(),
+                    "Generate insights from data".to_string(),
+                ],
+            },
+        );
 
         // Content & Writing Roles
-        roles.insert("content-writer".to_string(), RoleDefinition {
-            name: "content-writer".to_string(),
-            description: "Creates written content, documentation, and copy".to_string(),
-            capabilities: vec![
-                "writing".to_string(),
-                "editing".to_string(),
-                "documentation".to_string(),
-                "copywriting".to_string(),
-                "proofreading".to_string(),
-            ],
-            suggested_provider: "openai".to_string(),
-            suggested_model: "gpt-4o".to_string(),
-            common_tasks: vec![
-                "Write technical documentation".to_string(),
-                "Create marketing copy".to_string(),
-                "Edit and proofread content".to_string(),
-                "Structure information effectively".to_string(),
-            ],
-        });
+        roles.insert(
+            "content-writer".to_string(),
+            RoleDefinition {
+                name: "content-writer".to_string(),
+                description: "Creates written content, documentation, and copy".to_string(),
+                capabilities: vec![
+                    "writing".to_string(),
+                    "editing".to_string(),
+                    "documentation".to_string(),
+                    "copywriting".to_string(),
+                    "proofreading".to_string(),
+                ],
+                suggested_provider: "openai".to_string(),
+                suggested_model: "gpt-4o".to_string(),
+                common_tasks: vec![
+                    "Write technical documentation".to_string(),
+                    "Create marketing copy".to_string(),
+                    "Edit and proofread content".to_string(),
+                    "Structure information effectively".to_string(),
+                ],
+            },
+        );
 
-        roles.insert("technical-writer".to_string(), RoleDefinition {
-            name: "technical-writer".to_string(),
-            description: "Specializes in technical documentation and user guides".to_string(),
-            capabilities: vec![
-                "technical-documentation".to_string(),
-                "api-documentation".to_string(),
-                "user-guides".to_string(),
-                "tutorials".to_string(),
-                "code-examples".to_string(),
-            ],
-            suggested_provider: "openai".to_string(),
-            suggested_model: "gpt-4o".to_string(),
-            common_tasks: vec![
-                "Document API endpoints".to_string(),
-                "Create user manuals".to_string(),
-                "Write technical tutorials".to_string(),
-                "Generate code documentation".to_string(),
-            ],
-        });
+        roles.insert(
+            "technical-writer".to_string(),
+            RoleDefinition {
+                name: "technical-writer".to_string(),
+                description: "Specializes in technical documentation and user guides".to_string(),
+                capabilities: vec![
+                    "technical-documentation".to_string(),
+                    "api-documentation".to_string(),
+                    "user-guides".to_string(),
+                    "tutorials".to_string(),
+                    "code-examples".to_string(),
+                ],
+                suggested_provider: "openai".to_string(),
+                suggested_model: "gpt-4o".to_string(),
+                common_tasks: vec![
+                    "Document API endpoints".to_string(),
+                    "Create user manuals".to_string(),
+                    "Write technical tutorials".to_string(),
+                    "Generate code documentation".to_string(),
+                ],
+            },
+        );
 
         // Quality & Testing Roles
-        roles.insert("qa-engineer".to_string(), RoleDefinition {
-            name: "qa-engineer".to_string(),
-            description: "Ensures software quality through testing and validation".to_string(),
-            capabilities: vec![
-                "testing".to_string(),
-                "quality-assurance".to_string(),
-                "automation".to_string(),
-                "validation".to_string(),
-                "bug-tracking".to_string(),
-            ],
-            suggested_provider: "deepseek".to_string(),
-            suggested_model: "deepseek-chat".to_string(),
-            common_tasks: vec![
-                "Create test cases".to_string(),
-                "Run automated tests".to_string(),
-                "Validate functionality".to_string(),
-                "Report and track bugs".to_string(),
-            ],
-        });
+        roles.insert(
+            "qa-engineer".to_string(),
+            RoleDefinition {
+                name: "qa-engineer".to_string(),
+                description: "Ensures software quality through testing and validation".to_string(),
+                capabilities: vec![
+                    "testing".to_string(),
+                    "quality-assurance".to_string(),
+                    "automation".to_string(),
+                    "validation".to_string(),
+                    "bug-tracking".to_string(),
+                ],
+                suggested_provider: "deepseek".to_string(),
+                suggested_model: "deepseek-chat".to_string(),
+                common_tasks: vec![
+                    "Create test cases".to_string(),
+                    "Run automated tests".to_string(),
+                    "Validate functionality".to_string(),
+                    "Report and track bugs".to_string(),
+                ],
+            },
+        );
 
         // Security & Operations Roles
-        roles.insert("security-auditor".to_string(), RoleDefinition {
-            name: "security-auditor".to_string(),
-            description: "Reviews code and systems for security vulnerabilities".to_string(),
-            capabilities: vec![
-                "security".to_string(),
-                "code-review".to_string(),
-                "vulnerability-assessment".to_string(),
-                "penetration-testing".to_string(),
-                "compliance".to_string(),
-            ],
-            suggested_provider: "deepseek".to_string(),
-            suggested_model: "deepseek-coder".to_string(),
-            common_tasks: vec![
-                "Review code for security issues".to_string(),
-                "Assess system vulnerabilities".to_string(),
-                "Recommend security improvements".to_string(),
-                "Ensure compliance with standards".to_string(),
-            ],
-        });
+        roles.insert(
+            "security-auditor".to_string(),
+            RoleDefinition {
+                name: "security-auditor".to_string(),
+                description: "Reviews code and systems for security vulnerabilities".to_string(),
+                capabilities: vec![
+                    "security".to_string(),
+                    "code-review".to_string(),
+                    "vulnerability-assessment".to_string(),
+                    "penetration-testing".to_string(),
+                    "compliance".to_string(),
+                ],
+                suggested_provider: "deepseek".to_string(),
+                suggested_model: "deepseek-coder".to_string(),
+                common_tasks: vec![
+                    "Review code for security issues".to_string(),
+                    "Assess system vulnerabilities".to_string(),
+                    "Recommend security improvements".to_string(),
+                    "Ensure compliance with standards".to_string(),
+                ],
+            },
+        );
 
         // Project Management Roles
-        roles.insert("project-coordinator".to_string(), RoleDefinition {
-            name: "project-coordinator".to_string(),
-            description: "Coordinates team efforts and tracks project progress".to_string(),
-            capabilities: vec![
-                "coordination".to_string(),
-                "planning".to_string(),
-                "communication".to_string(),
-                "tracking".to_string(),
-                "delegation".to_string(),
-            ],
-            suggested_provider: "openai".to_string(),
-            suggested_model: "gpt-4o".to_string(),
-            common_tasks: vec![
-                "Coordinate team activities".to_string(),
-                "Track project milestones".to_string(),
-                "Facilitate communication".to_string(),
-                "Manage task dependencies".to_string(),
-            ],
-        });
+        roles.insert(
+            "project-coordinator".to_string(),
+            RoleDefinition {
+                name: "project-coordinator".to_string(),
+                description: "Coordinates team efforts and tracks project progress".to_string(),
+                capabilities: vec![
+                    "coordination".to_string(),
+                    "planning".to_string(),
+                    "communication".to_string(),
+                    "tracking".to_string(),
+                    "delegation".to_string(),
+                ],
+                suggested_provider: "openai".to_string(),
+                suggested_model: "gpt-4o".to_string(),
+                common_tasks: vec![
+                    "Coordinate team activities".to_string(),
+                    "Track project milestones".to_string(),
+                    "Facilitate communication".to_string(),
+                    "Manage task dependencies".to_string(),
+                ],
+            },
+        );
 
         // Domain-specific mappings
-        domain_mappings.insert("web-development".to_string(), vec![
-            "backend-developer".to_string(),
-            "frontend-developer".to_string(),
-            "qa-engineer".to_string(),
-            "project-coordinator".to_string(),
-        ]);
+        domain_mappings.insert(
+            "web-development".to_string(),
+            vec![
+                "backend-developer".to_string(),
+                "frontend-developer".to_string(),
+                "qa-engineer".to_string(),
+                "project-coordinator".to_string(),
+            ],
+        );
 
-        domain_mappings.insert("data-analysis".to_string(), vec![
-            "data-scientist".to_string(),
-            "content-writer".to_string(),
-            "project-coordinator".to_string(),
-        ]);
+        domain_mappings.insert(
+            "data-analysis".to_string(),
+            vec![
+                "data-scientist".to_string(),
+                "content-writer".to_string(),
+                "project-coordinator".to_string(),
+            ],
+        );
 
-        domain_mappings.insert("documentation".to_string(), vec![
-            "technical-writer".to_string(),
-            "content-writer".to_string(),
-            "project-coordinator".to_string(),
-        ]);
+        domain_mappings.insert(
+            "documentation".to_string(),
+            vec![
+                "technical-writer".to_string(),
+                "content-writer".to_string(),
+                "project-coordinator".to_string(),
+            ],
+        );
 
-        domain_mappings.insert("resume-optimization".to_string(), vec![
-            "content-writer".to_string(),
-            "technical-writer".to_string(),
-            "project-coordinator".to_string(),
-        ]);
+        domain_mappings.insert(
+            "resume-optimization".to_string(),
+            vec![
+                "content-writer".to_string(),
+                "technical-writer".to_string(),
+                "project-coordinator".to_string(),
+            ],
+        );
 
-        domain_mappings.insert("code-review".to_string(), vec![
-            "security-auditor".to_string(),
-            "qa-engineer".to_string(),
-            "project-coordinator".to_string(),
-        ]);
+        domain_mappings.insert(
+            "code-review".to_string(),
+            vec![
+                "security-auditor".to_string(),
+                "qa-engineer".to_string(),
+                "project-coordinator".to_string(),
+            ],
+        );
 
         RoleTaxonomy {
             roles,
@@ -324,20 +362,35 @@ impl AgentManager {
         let mut primary_domain = "general".to_string();
 
         // Determine primary domain
-        if objective_lower.contains("web") || objective_lower.contains("app") ||
-           objective_lower.contains("frontend") || objective_lower.contains("backend") {
+        if objective_lower.contains("web")
+            || objective_lower.contains("app")
+            || objective_lower.contains("frontend")
+            || objective_lower.contains("backend")
+        {
             primary_domain = "web-development".to_string();
-        } else if objective_lower.contains("data") || objective_lower.contains("analyze") ||
-                  objective_lower.contains("statistic") || objective_lower.contains("model") {
+        } else if objective_lower.contains("data")
+            || objective_lower.contains("analyze")
+            || objective_lower.contains("statistic")
+            || objective_lower.contains("model")
+        {
             primary_domain = "data-analysis".to_string();
-        } else if objective_lower.contains("document") || objective_lower.contains("write") ||
-                  objective_lower.contains("manual") || objective_lower.contains("guide") {
+        } else if objective_lower.contains("document")
+            || objective_lower.contains("write")
+            || objective_lower.contains("manual")
+            || objective_lower.contains("guide")
+        {
             primary_domain = "documentation".to_string();
-        } else if objective_lower.contains("resume") || objective_lower.contains("cv") ||
-                  objective_lower.contains("career") || objective_lower.contains("job") {
+        } else if objective_lower.contains("resume")
+            || objective_lower.contains("cv")
+            || objective_lower.contains("career")
+            || objective_lower.contains("job")
+        {
             primary_domain = "resume-optimization".to_string();
-        } else if objective_lower.contains("review") || objective_lower.contains("audit") ||
-                  objective_lower.contains("security") || objective_lower.contains("test") {
+        } else if objective_lower.contains("review")
+            || objective_lower.contains("audit")
+            || objective_lower.contains("security")
+            || objective_lower.contains("test")
+        {
             primary_domain = "code-review".to_string();
         }
 
@@ -347,7 +400,10 @@ impl AgentManager {
                 if let Some(role_def) = self.taxonomy.roles.get(role_name) {
                     required_roles.push(RoleAssignment {
                         role_name: role_name.clone(),
-                        customized_description: format!("{} for: {}", role_def.description, objective),
+                        customized_description: format!(
+                            "{} for: {}",
+                            role_def.description, objective
+                        ),
                         priority: if index == 0 { 1 } else { 2 },
                         estimated_effort: 5, // Default medium effort
                     });
@@ -359,7 +415,7 @@ impl AgentManager {
         if required_roles.len() > 1 {
             required_roles.push(RoleAssignment {
                 role_name: "project-coordinator".to_string(),
-                customized_description: format!("Coordinate team efforts for: {}", objective),
+                customized_description: format!("Coordinate team efforts for: {objective}"),
                 priority: 1,
                 estimated_effort: 3,
             });
@@ -369,10 +425,16 @@ impl AgentManager {
         let suggested_tasks = self.generate_suggested_tasks(objective, &required_roles);
 
         // Estimate complexity based on number of roles and objective length
-        let complexity_estimate = std::cmp::min(10, (objective.len() / 50) as u8 + required_roles.len() as u8);
+        let complexity_estimate = std::cmp::min(
+            10,
+            (objective.len() / 50) as u8 + required_roles.len() as u8,
+        );
+
+        let primary_framework = primary_domain.clone();
 
         Ok(RoleAnalysis {
             primary_domain,
+            primary_framework,
             required_roles,
             suggested_tasks,
             complexity_estimate,
@@ -384,7 +446,7 @@ impl AgentManager {
         let mut tasks = Vec::new();
 
         // Always start with analysis
-        tasks.push(format!("Analyze requirements for: {}", objective));
+        tasks.push(format!("Analyze requirements for: {objective}"));
 
         // Add role-specific tasks
         for role in roles {
@@ -408,14 +470,19 @@ impl AgentManager {
         for role_assignment in &analysis.required_roles {
             if let Some(role_def) = self.taxonomy.roles.get(&role_assignment.role_name) {
                 let agent = AgentProfile {
-                    name: format!("{}-{}", role_assignment.role_name, &uuid::Uuid::new_v4().to_string()[..8]),
+                    name: format!(
+                        "{}-{}",
+                        role_assignment.role_name,
+                        &uuid::Uuid::new_v4().to_string()[..8]
+                    ),
                     role: role_assignment.customized_description.clone(),
                     capabilities: role_def.capabilities.clone(),
                     model_provider: role_def.suggested_provider.clone(),
                     model: role_def.suggested_model.clone(),
                     instructions: Some(format!(
                         "You are a {} specializing in {}. Focus on your area of expertise and collaborate with other agents.",
-                        role_def.name, role_def.capabilities.join(", ")
+                        role_def.name,
+                        role_def.capabilities.join(", ")
                     )),
                 };
                 agents.push(agent);
@@ -438,7 +505,8 @@ impl AgentManager {
     /// Get roles by domain
     pub fn get_roles_by_domain(&self, domain: &str) -> Vec<&RoleDefinition> {
         if let Some(role_names) = self.taxonomy.domain_mappings.get(domain) {
-            role_names.iter()
+            role_names
+                .iter()
                 .filter_map(|name| self.taxonomy.roles.get(name))
                 .collect()
         } else {
@@ -453,23 +521,46 @@ mod tests {
 
     #[test]
     fn test_role_taxonomy_creation() {
-        let config = Config::default();
+        let config = Config::load_from_base_config_with_overrides(
+            crate::config::ConfigToml::default(),
+            crate::config::ConfigOverrides::default(),
+            std::path::PathBuf::from("."),
+        )
+        .unwrap();
         let manager = AgentManager::new(config);
 
         assert!(manager.taxonomy.roles.contains_key("backend-developer"));
         assert!(manager.taxonomy.roles.contains_key("frontend-developer"));
         assert!(manager.taxonomy.roles.contains_key("data-scientist"));
-        assert!(manager.taxonomy.domain_mappings.contains_key("web-development"));
+        assert!(
+            manager
+                .taxonomy
+                .domain_mappings
+                .contains_key("web-development")
+        );
     }
 
     #[test]
     fn test_role_definition_content() {
-        let config = Config::default();
+        let config = Config::load_from_base_config_with_overrides(
+            crate::config::ConfigToml::default(),
+            crate::config::ConfigOverrides::default(),
+            std::path::PathBuf::from("."),
+        )
+        .unwrap();
         let manager = AgentManager::new(config);
 
         let backend_role = manager.get_role_definition("backend-developer").unwrap();
         assert_eq!(backend_role.name, "backend-developer");
-        assert!(backend_role.capabilities.contains(&"api-design".to_string()));
-        assert!(backend_role.common_tasks.contains(&"Implement REST API endpoints".to_string()));
+        assert!(
+            backend_role
+                .capabilities
+                .contains(&"api-design".to_string())
+        );
+        assert!(
+            backend_role
+                .common_tasks
+                .contains(&"Implement REST API endpoints".to_string())
+        );
     }
 }

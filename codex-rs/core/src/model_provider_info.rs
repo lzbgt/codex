@@ -308,7 +308,9 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                     .filter(|v| !v.trim().is_empty())
                     .or_else(|| Some("https://api.deepseek.com".to_string())),
                 env_key: Some("DEEPSEEK_API_KEY".to_string()),
-                env_key_instructions: Some("Get your API key from https://platform.deepseek.com/api_keys".to_string()),
+                env_key_instructions: Some(
+                    "Get your API key from https://platform.deepseek.com/api_keys".to_string(),
+                ),
                 wire_api: WireApi::Chat,
                 query_params: None,
                 http_headers: None,

@@ -3,7 +3,8 @@
 //! This module provides message types and communication channels
 //! for multi-agent coordination and collaboration.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 
 /// Message types for inter-agent communication
@@ -121,22 +122,30 @@ impl CommunicationChannel {
     }
 
     /// Add a direct channel for an agent
-    pub fn add_direct_channel(&mut self, agent_id: String, channel: tokio::sync::mpsc::UnboundedSender<AgentMessage>) {
+    pub fn add_direct_channel(
+        &mut self,
+        agent_id: String,
+        channel: tokio::sync::mpsc::UnboundedSender<AgentMessage>,
+    ) {
         self.direct_channels.insert(agent_id, channel);
     }
 
     /// Broadcast a message to all agents
-    pub fn broadcast(&self, message: AgentMessage) -> Result<(), tokio::sync::mpsc::error::SendError<AgentMessage>> {
+    pub fn broadcast(
+        &self,
+        message: AgentMessage,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<AgentMessage>> {
         self.broadcast_queue.send(message)
     }
 
     /// Send a direct message to a specific agent
     pub fn send_direct(&self, agent_id: &str, message: AgentMessage) -> Result<(), String> {
         if let Some(channel) = self.direct_channels.get(agent_id) {
-            channel.send(message)
-                .map_err(|e| format!("Failed to send direct message: {}", e))
+            channel
+                .send(message)
+                .map_err(|e| format!("Failed to send direct message: {e}"))
         } else {
-            Err(format!("No direct channel found for agent: {}", agent_id))
+            Err(format!("No direct channel found for agent: {agent_id}"))
         }
     }
 
@@ -164,12 +173,25 @@ impl CommunicationChannel {
         self.message_history
             .iter()
             .filter(|msg| match msg {
-                AgentMessage::TaskUpdate { task_id: _, status: _, output: _ } => false, // TaskUpdate doesn't have agent_id
-                AgentMessage::StatusReport { agent_id: msg_agent_id, .. } => msg_agent_id == agent_id,
+                AgentMessage::TaskUpdate {
+                    task_id: _,
+                    status: _,
+                    output: _,
+                } => false, // TaskUpdate doesn't have agent_id
+                AgentMessage::StatusReport {
+                    agent_id: msg_agent_id,
+                    ..
+                } => msg_agent_id == agent_id,
                 AgentMessage::HumanInputRequest { from_agent, .. } => from_agent == agent_id,
                 AgentMessage::InformationShare { from_agent, .. } => from_agent == agent_id,
-                AgentMessage::BlockedNotification { agent_id: msg_agent_id, .. } => msg_agent_id == agent_id,
-                AgentMessage::ProgressUpdate { agent_id: msg_agent_id, .. } => msg_agent_id == agent_id,
+                AgentMessage::BlockedNotification {
+                    agent_id: msg_agent_id,
+                    ..
+                } => msg_agent_id == agent_id,
+                AgentMessage::ProgressUpdate {
+                    agent_id: msg_agent_id,
+                    ..
+                } => msg_agent_id == agent_id,
                 _ => false,
             })
             .collect()
@@ -180,7 +202,9 @@ impl CommunicationChannel {
         self.message_history
             .iter()
             .filter(|msg| match msg {
-                AgentMessage::InformationShare { topic: msg_topic, .. } => msg_topic == topic,
+                AgentMessage::InformationShare {
+                    topic: msg_topic, ..
+                } => msg_topic == topic,
                 _ => false,
             })
             .collect()
@@ -192,7 +216,12 @@ pub struct MessageBuilder;
 
 impl MessageBuilder {
     /// Create a status report message
-    pub fn status_report(agent_id: String, current_work: String, next_steps: String, help_needed: bool) -> AgentMessage {
+    pub fn status_report(
+        agent_id: String,
+        current_work: String,
+        next_steps: String,
+        help_needed: bool,
+    ) -> AgentMessage {
         AgentMessage::StatusReport {
             agent_id,
             current_work,
@@ -202,7 +231,12 @@ impl MessageBuilder {
     }
 
     /// Create a human input request
-    pub fn human_input_request(from_agent: String, request: String, context: String, urgency: UrgencyLevel) -> AgentMessage {
+    pub fn human_input_request(
+        from_agent: String,
+        request: String,
+        context: String,
+        urgency: UrgencyLevel,
+    ) -> AgentMessage {
         AgentMessage::HumanInputRequest {
             from_agent,
             request,
@@ -212,7 +246,12 @@ impl MessageBuilder {
     }
 
     /// Create an information share message
-    pub fn information_share(from_agent: String, to_agents: Vec<String>, content: String, topic: String) -> AgentMessage {
+    pub fn information_share(
+        from_agent: String,
+        to_agents: Vec<String>,
+        content: String,
+        topic: String,
+    ) -> AgentMessage {
         AgentMessage::InformationShare {
             from_agent,
             to_agents,
@@ -222,7 +261,11 @@ impl MessageBuilder {
     }
 
     /// Create a blocked notification
-    pub fn blocked_notification(agent_id: String, blocker: String, help_requested: bool) -> AgentMessage {
+    pub fn blocked_notification(
+        agent_id: String,
+        blocker: String,
+        help_requested: bool,
+    ) -> AgentMessage {
         AgentMessage::BlockedNotification {
             agent_id,
             blocker,
@@ -231,7 +274,12 @@ impl MessageBuilder {
     }
 
     /// Create a progress update
-    pub fn progress_update(agent_id: String, task_id: String, progress_percentage: u8, status_message: String) -> AgentMessage {
+    pub fn progress_update(
+        agent_id: String,
+        task_id: String,
+        progress_percentage: u8,
+        status_message: String,
+    ) -> AgentMessage {
         AgentMessage::ProgressUpdate {
             agent_id,
             task_id,
@@ -249,24 +297,33 @@ impl CommunicationPatterns {
     pub fn agent_starting_work(agent_id: &str, task_description: &str) -> AgentMessage {
         MessageBuilder::status_report(
             agent_id.to_string(),
-            format!("Starting work on: {}", task_description),
+            format!("Starting work on: {task_description}"),
             "Will provide updates as work progresses".to_string(),
             false,
         )
     }
 
     /// Pattern for agent completing a task
-    pub fn agent_completing_work(agent_id: &str, task_description: &str, result: &str) -> AgentMessage {
+    pub fn agent_completing_work(
+        agent_id: &str,
+        task_description: &str,
+        result: &str,
+    ) -> AgentMessage {
         MessageBuilder::status_report(
             agent_id.to_string(),
-            format!("Completed: {}", task_description),
-            format!("Result: {}", result),
+            format!("Completed: {task_description}"),
+            format!("Result: {result}"),
             false,
         )
     }
 
     /// Pattern for agent needing human input
-    pub fn agent_needs_human_input(agent_id: &str, request: &str, context: &str, urgency: UrgencyLevel) -> AgentMessage {
+    pub fn agent_needs_human_input(
+        agent_id: &str,
+        request: &str,
+        context: &str,
+        urgency: UrgencyLevel,
+    ) -> AgentMessage {
         MessageBuilder::human_input_request(
             agent_id.to_string(),
             request.to_string(),
@@ -276,7 +333,12 @@ impl CommunicationPatterns {
     }
 
     /// Pattern for sharing information with specific agents
-    pub fn share_information_with_agents(from_agent: &str, to_agents: Vec<String>, content: &str, topic: &str) -> AgentMessage {
+    pub fn share_information_with_agents(
+        from_agent: &str,
+        to_agents: Vec<String>,
+        content: &str,
+        topic: &str,
+    ) -> AgentMessage {
         MessageBuilder::information_share(
             from_agent.to_string(),
             to_agents,
@@ -287,11 +349,7 @@ impl CommunicationPatterns {
 
     /// Pattern for agent being blocked
     pub fn agent_blocked(agent_id: &str, blocker: &str, needs_help: bool) -> AgentMessage {
-        MessageBuilder::blocked_notification(
-            agent_id.to_string(),
-            blocker.to_string(),
-            needs_help,
-        )
+        MessageBuilder::blocked_notification(agent_id.to_string(), blocker.to_string(), needs_help)
     }
 }
 
@@ -316,7 +374,12 @@ mod tests {
         );
 
         match status_msg {
-            AgentMessage::StatusReport { agent_id, current_work, next_steps, help_needed } => {
+            AgentMessage::StatusReport {
+                agent_id,
+                current_work,
+                next_steps,
+                help_needed,
+            } => {
                 assert_eq!(agent_id, "test-agent");
                 assert_eq!(current_work, "working on task");
                 assert_eq!(next_steps, "next steps");
@@ -331,7 +394,11 @@ mod tests {
         let start_msg = CommunicationPatterns::agent_starting_work("agent1", "test task");
 
         match start_msg {
-            AgentMessage::StatusReport { agent_id, current_work, .. } => {
+            AgentMessage::StatusReport {
+                agent_id,
+                current_work,
+                ..
+            } => {
                 assert_eq!(agent_id, "agent1");
                 assert!(current_work.contains("test task"));
             }

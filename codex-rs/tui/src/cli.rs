@@ -1,4 +1,5 @@
-use clap::{ArgAction, Parser};
+use clap::ArgAction;
+use clap::Parser;
 use codex_common::ApprovalModeCliArg;
 use codex_common::CliConfigOverrides;
 use std::path::PathBuf;

@@ -200,7 +200,6 @@ struct GenerateTsCommand {
     prettier: Option<PathBuf>,
 }
 
-
 #[derive(Debug, Parser)]
 struct CasualMultiAgentCommand {
     /// Objective/task for casual multi-agent collaboration
@@ -218,7 +217,6 @@ struct CasualMultiAgentCommand {
     #[clap(skip)]
     config_overrides: CliConfigOverrides,
 }
-
 
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
     let AppExitInfo {
@@ -507,21 +505,21 @@ fn print_completion(cmd: CompletionCommand) {
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 
-
 /// Run casual multi-agent collaboration command
 async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> anyhow::Result<()> {
-    use codex_core::multi_agent::casual::api;
-    use codex_core::multi_agent::casual::CasualAction;
     use codex_core::config::Config;
+    use codex_core::multi_agent::casual::CasualAction;
+    use codex_core::multi_agent::casual::api;
     use std::sync::Arc;
 
     // Load configuration
-    let overrides = casual_cli.config_overrides.parse_overrides()
+    let overrides = casual_cli
+        .config_overrides
+        .parse_overrides()
         .map_err(|e| anyhow::anyhow!(e))?;
-    let config = Config::load_with_cli_overrides(
-        overrides,
-        codex_core::config::ConfigOverrides::default()
-    ).await?;
+    let config =
+        Config::load_with_cli_overrides(overrides, codex_core::config::ConfigOverrides::default())
+            .await?;
 
     let config = Arc::new(config);
 
@@ -530,7 +528,14 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
 
     println!("🚀 Starting casual multi-agent collaboration");
     println!("Objective: {}", casual_cli.objective);
-    println!("Mode: {}", if casual_cli.interactive { "Interactive" } else { "Background" });
+    println!(
+        "Mode: {}",
+        if casual_cli.interactive {
+            "Interactive"
+        } else {
+            "Background"
+        }
+    );
     println!();
 
     // Publish the task
@@ -554,7 +559,10 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
                 println!("  Progress: {}%", snapshot.progress_percentage);
                 println!("  Active Agents: {:?}", snapshot.active_agents);
                 println!("  Recent Activity: {}", snapshot.recent_activity);
-                println!("  Human Attention Needed: {}", snapshot.human_attention_needed);
+                println!(
+                    "  Human Attention Needed: {}",
+                    snapshot.human_attention_needed
+                );
                 println!();
 
                 last_progress = snapshot.progress_percentage;
@@ -568,7 +576,11 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
                 if !recent_messages.is_empty() {
                     println!("💬 Recent Messages:");
                     for msg in recent_messages.iter().rev() {
-                        let to_agent = msg.to_agent.as_ref().map(|a| format!("→ {}", a)).unwrap_or_default();
+                        let to_agent = msg
+                            .to_agent
+                            .as_ref()
+                            .map(|a| format!("→ {}", a))
+                            .unwrap_or_default();
                         println!("  {} {}: {}", msg.from_agent, to_agent, msg.content);
                     }
                     println!();
@@ -586,8 +598,9 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
                             CasualAction::QuickGuidance {
                                 message: input.trim().to_string(),
                                 to_agent: None,
-                            }
-                        ).await?;
+                            },
+                        )
+                        .await?;
                         println!("✅ Guidance provided!");
                         println!();
                     }
@@ -606,14 +619,18 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
     } else {
         // Background mode - just show initial status and exit
         println!("🔮 Task is running in background mode");
-        println!("Use 'codex casual --monitor --task-id {}' to monitor progress", session.task_id);
-        println!("Use 'codex casual --interactive --task-id {}' for interactive engagement", session.task_id);
+        println!(
+            "Use 'codex casual --monitor --task-id {}' to monitor progress",
+            session.task_id
+        );
+        println!(
+            "Use 'codex casual --interactive --task-id {}' for interactive engagement",
+            session.task_id
+        );
     }
 
     Ok(())
 }
-
-
 
 #[cfg(test)]
 mod tests {

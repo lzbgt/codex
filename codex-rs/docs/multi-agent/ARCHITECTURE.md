@@ -1,112 +1,69 @@
-# Multi-Agent System Architecture
+# Multi-Agent System Architecture (Prototype)
+
+> The diagram below describes the intended design. The current implementation uses heuristic role planning, no tool execution, and minimal collaboration. Treat LLM references as future work unless explicitly noted. For up-to-date progress, refer to [PLANNING.md](./PLANNING.md); this architecture document is intended to change infrequently.
 
 ## Overview
 
 **Dual-Mode System**:
 
-1. **Original Codex** - Single session usage
-2. **Casual Multi-Agent** - Dynamic team creation with casual human engagement
+1. **Original Codex** – Single-session usage
+2. **Casual Multi-Agent (Prototype)** – Heuristic team creation with casual human engagement
 
-## Casual Multi-Agent
-
-**Architecture**:
+## Casual Multi-Agent (Target Flow)
 
 ```
-Objective → LLM Planning → Dynamic Team → Casual Collaboration → Result
+Objective → Planner (future: LLM) → Dynamic Team → Casual Collaboration → Result
                      ↖              ↖              ↖
                     Human drops in   Human provides  Human suggests
                     with info/data   guidance        new task
 ```
 
-**Key Components**:
+**Current Implementation Highlights**
 
-- `CasualMultiAgentOrchestrator` - Dynamic team creation using LLM-based role planning
-- `AgentManager` - Dynamic role taxonomy and analysis
-- `CasualAgent` - Dedicated ConversationId per agent
-- Session persistence with `RolloutRecorder`
-- Web search preference before human referral
+- `CasualMultiAgentOrchestrator` – Manages sessions and heuristic agent execution.
+- `AgentManager` – Provides rule-based role taxonomy and assignments.
+- `CasualAgent` – Each agent gets a `ConversationId`; rollout persistence is experimental.
+- Tool usage, web search, and auto-confirmation flows are not yet implemented.
 
-**Usage**: `codex multi-agent --objective "task" --monitor --interactive`
-
-**Dynamic Role Planning**:
-- LLM analyzes objective and determines required roles
-- Standard role taxonomy provides consistent role definitions
-- No hardcoded roles - dynamically planned based on objective
-- Supports domains like web-development, data-analysis, documentation, etc.
-- **User Confirmation Workflow**: After LLM planning, waits for user confirmation before execution
-  - Displays planned roles and tasks to user
-  - Allows user to modify role assignments or request replanning
-  - Supports backend selection (OpenAI/DeepSeek) for each role
+**CLI Usage (Prototype)**: `codex multi-agent --objective "task" --monitor`
 
 ## Session Management
 
-- Each AI agent gets dedicated `ConversationId`
-- Auto-save during execution
-- Session recovery capabilities
+- Agents operate under dedicated `ConversationId`s.
+- Rollout recorder flushes transcripts; resume logic remains limited.
+- Auto-save occurs opportunistically during execution.
 
-## Token Optimization
+## Planned Enhancements
 
-- Local information sharing between agents
-- Web search preference before human referral
-- Cached data reuse
+- LLM-driven role planning and task decomposition.
+- Tool-enabled collaboration (shell, file operations, web search, apply_patch).
+- Human-in-the-loop approval and replanning workflow.
+- Conflict resolution, dependency management, and artifact review.
 
-## Implementation Details
-
-### File Structure
+## File Map
 
 ```
 core/src/multi_agent/
 ├── mod.rs                  # Module exports and structure
-├── casual.rs               # Casual multi-agent collaboration system
-├── agents.rs               # Dynamic role planning and AgentManager
-├── communication.rs        # Inter-agent communication
-└── task_planner.rs         # Task planning system (future integration)
+├── casual.rs               # Orchestrator, session management, agent execution
+├── agents.rs               # Role taxonomy and heuristic planner
+├── communication.rs        # Message types and in-memory queues
+└── task_planner.rs         # Placeholder task planner
 ```
 
-### Key Integration Points
+## Integration Points
 
-- `ConversationManager` for session persistence
-- `RolloutRecorder` for auto-save functionality
-- `AgentManager` for dynamic role planning using standard role taxonomy
-- Model provider system for agent execution
-- Tool calling infrastructure for web search
+- `ConversationManager` and `RolloutRecorder` for session persistence.
+- Model provider stack delivers streamed responses (no tool calls yet).
+- CLI (`cli/src/main.rs`) initialises the orchestrator and polling loop.
 
-## Performance Considerations
+## Risks & Considerations
 
-### Scalability
+- Lack of tool execution prevents agents from modifying code or running tests.
+- Blocking stdin confirmation hangs unattended runs; needs async refactor.
+- Testing coverage is minimal, increasing regression risk.
 
-- Memory usage scales with number of active agents
-- Session persistence optimized for large projects
-- Efficient coordination minimizes overhead
+## Testing (Current vs Planned)
 
-### Token Efficiency
-
-- Local information sharing reduces LLM calls
-- Cached data reuse minimizes redundant requests
-- Web search preference reduces human referral costs
-
-### Session Recovery
-
-- Individual agent session persistence
-- Main task session coordination
-- Resume capability for interrupted collaborations
-
-## Testing Strategy
-
-### Unit Tests
-
-- Agent profile creation and validation
-- Task decomposition logic
-- Agent assignment algorithms
-
-### Integration Tests
-
-- Multi-agent collaboration scenarios
-- Session persistence and recovery
-- Cross-agent communication
-
-### End-to-End Tests
-
-- Complete multi-agent workflows
-- Real-world use cases
-- Error handling and recovery scenarios
+- **Current:** `test_multi_agent.rs` smoke test.
+- **Planned:** Unit tests for planner and messaging, integration tests for tool execution and session recovery, end-to-end scenarios covering replanning and human approvals.

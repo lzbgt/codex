@@ -3,8 +3,8 @@
 //! This module provides intelligent task decomposition and assignment
 //! for multi-agent workflows.
 
-use std::collections::HashMap;
 use anyhow::Result;
+use std::collections::HashMap;
 
 use crate::multi_agent::agents::AgentProfile;
 
@@ -36,9 +36,7 @@ pub struct TaskPlanner {
 impl TaskPlanner {
     /// Create a new task planner
     pub fn new(coordinator_agent: AgentProfile) -> Self {
-        Self {
-            coordinator_agent,
-        }
+        Self { coordinator_agent }
     }
 
     /// Decompose an objective into a structured task plan
@@ -76,28 +74,28 @@ impl TaskPlanner {
         vec![
             Subtask {
                 id: "analysis".to_string(),
-                description: format!("Analyze requirements for: {}", objective),
+                description: format!("Analyze requirements for: {objective}"),
                 required_capabilities: vec!["analysis".to_string(), "planning".to_string()],
                 estimated_complexity: 3,
                 dependencies: vec![],
             },
             Subtask {
                 id: "design".to_string(),
-                description: format!("Design solution for: {}", objective),
+                description: format!("Design solution for: {objective}"),
                 required_capabilities: vec!["design".to_string(), "architecture".to_string()],
                 estimated_complexity: 5,
                 dependencies: vec!["analysis".to_string()],
             },
             Subtask {
                 id: "implementation".to_string(),
-                description: format!("Implement solution for: {}", objective),
+                description: format!("Implement solution for: {objective}"),
                 required_capabilities: vec!["coding".to_string(), "implementation".to_string()],
                 estimated_complexity: 7,
                 dependencies: vec!["design".to_string()],
             },
             Subtask {
                 id: "testing".to_string(),
-                description: format!("Test solution for: {}", objective),
+                description: format!("Test solution for: {objective}"),
                 required_capabilities: vec!["testing".to_string(), "qa".to_string()],
                 estimated_complexity: 4,
                 dependencies: vec!["implementation".to_string()],
@@ -119,9 +117,10 @@ impl TaskPlanner {
                 .iter()
                 .filter(|agent| {
                     // Check if agent has all required capabilities
-                    subtask.required_capabilities.iter().all(|capability| {
-                        agent.capabilities.contains(capability)
-                    })
+                    subtask
+                        .required_capabilities
+                        .iter()
+                        .all(|capability| agent.capabilities.contains(capability))
                 })
                 .max_by_key(|agent| {
                     // Score based on capability match
@@ -169,7 +168,10 @@ impl TaskPlanner {
             .iter()
             .filter(|subtask| {
                 // Task is ready if all dependencies are completed
-                subtask.dependencies.iter().all(|dep| completed_tasks.contains(dep))
+                subtask
+                    .dependencies
+                    .iter()
+                    .all(|dep| completed_tasks.contains(dep))
             })
             .cloned()
             .collect()
@@ -183,9 +185,10 @@ impl TaskPlanner {
     ) -> Result<()> {
         for subtask in &task_plan.subtasks {
             let can_handle = available_agents.iter().any(|agent| {
-                subtask.required_capabilities.iter().all(|capability| {
-                    agent.capabilities.contains(capability)
-                })
+                subtask
+                    .required_capabilities
+                    .iter()
+                    .all(|capability| agent.capabilities.contains(capability))
             });
 
             if !can_handle {
@@ -218,7 +221,11 @@ mod tests {
             AgentProfile {
                 name: "developer".to_string(),
                 role: "Developer".to_string(),
-                capabilities: vec!["design".to_string(), "coding".to_string(), "implementation".to_string()],
+                capabilities: vec![
+                    "design".to_string(),
+                    "coding".to_string(),
+                    "implementation".to_string(),
+                ],
                 model_provider: "deepseek".to_string(),
                 model: "deepseek-coder".to_string(),
                 instructions: None,

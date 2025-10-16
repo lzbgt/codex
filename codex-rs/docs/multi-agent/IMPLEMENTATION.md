@@ -2,24 +2,26 @@
 
 ## Current Status
 
-### ✅ IMPLEMENTED
+### Prototype Scope
 
-**Casual Multi-Agent with Dynamic Role Planning**
-- Dynamic agent team creation using LLM-based role analysis
-- Standard role taxonomy for consistent role definitions
-- Session persistence with dedicated ConversationId per agent
-- Web search preference before human referral
-- Casual human engagement without formal joining
-- User confirmation workflow after planning phase
-- CLI: `codex multi-agent --objective "task" --monitor --interactive`
+- Role planning uses keyword heuristics; no live LLM calls yet.
+- Agents stream responses but cannot run tools or collaborate.
+- Session persistence is partially wired; resume support is minimal.
+- CLI provisions monitoring output but still contains blocking prompts.
 
-### ⚠️ LIMITATIONS
+### Key Limitations
 
-1. **Simulated Execution**: Uses `tokio::time::sleep()` instead of real LLM calls
-   - ✅ **PARTIALLY RESOLVED**: Model execution infrastructure implemented with placeholder
-   - 🔄 **REMAINING**: Need to integrate with actual Codex model provider system
-2. **Rule-based Planning**: Keyword matching instead of actual LLM analysis
-3. **Basic Coordination**: Limited inter-agent communication
+1. **No Tool Integration** – `Prompt` objects contain empty tool lists, so agents cannot execute filesystem/shell actions.
+2. **Placeholder Planning** – `TaskPlanner` returns canned subtasks and assignments.
+3. **Limited Coordination** – Messaging exists, but dependency handling and artifact review are unimplemented.
+4. **Blocking Confirmation** – `start_planning_phase` still reads from stdin, which stalls background execution.
+5. **Testing Gaps** – Only a smoke test exists; there is no coverage for planning or messaging flows.
+
+### DeepSeek Integration Status
+
+- The DeepSeek provider is defined in the model registry, but multi-agent planning still uses heuristic role assignment. No API calls are made to DeepSeek today.
+- Environment variable `DEEPSEEK_API_KEY` must be provided by the user; no shared test key is bundled.
+- Target work: introduce DeepSeek-backed role planning, surface provider/model selection per agent, and ensure requests send tool definitions compatible with the Chat Completions API.
 
 ## Key Files
 - `core/src/multi_agent/casual.rs` - Casual multi-agent with dynamic role planning
@@ -30,9 +32,10 @@
 ## Next Steps
 
 ### HIGH PRIORITY
-1. **Real Model Execution**: Integrate with Codex model provider system
-2. **LLM Planning**: Replace rule-based with actual LLM role assignment using standard role specifications
-3. **Enhanced Coordination**: Implement sophisticated inter-agent communication
+1. Provide tool specs (shell/file/apply_patch/web) and process tool events.
+2. Replace heuristic planning with LLM-backed analysis (DeepSeek) or richer heuristics.
+3. Remove blocking stdin flow; add asynchronous confirmation hooks.
+4. Introduce automated tests for planning, messaging, and artifact workflows.
 
 ## Technical Architecture Notes
 
@@ -44,7 +47,7 @@
 4. Publish task → `api::publish_task()`
 5. Dynamic role planning → `AgentManager::analyze_objective()` (rule-based)
 6. Agent creation → `AgentManager::create_agents_from_analysis()`
-7. Task execution → Simulated execution with `tokio::time::sleep()`
+7. Task execution → Streams model output (tool calls not yet enabled)
 
 ### Key Files Modified
 
@@ -64,14 +67,11 @@
 
 ### Casual Multi-Agent Collaboration with Dynamic Role Planning
 
-#### Dynamic Role Analysis
-- Standard role taxonomy with predefined role definitions
-- Domain-specific role mappings (web-development, data-analysis, documentation, etc.)
-- Rule-based analysis using keyword matching (to be replaced with LLM)
-- Automatic complexity estimation based on objective length and role count
-- **LLM System Prompt**: Explicitly instructs LLM to use standard role specifications (international/gov standards)
-  - System prompt guides LLM to use consistent role naming and capability definitions
-  - Standardized role format ensures interoperability and consistency
+#### Role Analysis (Current)
+- Predefined role taxonomy and domain mappings.
+- Keyword-based classification converts objectives into role assignments.
+- Complexity estimation scales with objective length and team size.
+- LLM prompts are planned but not yet invoked.
 
 #### Standard Role Taxonomy
 ```rust
@@ -91,22 +91,18 @@ pub struct RoleDefinition {
 ```
 
 #### Dynamic Agent Creation
-- LLM analyzes objective and determines needed roles (rule-based simulation)
-- Creates dynamic agent team based on task requirements
-- Each AI agent gets dedicated session ID and persistence
-- Always includes human collaborator for casual engagement
+- Rule-based planner determines required roles from taxonomy.
+- Agents receive dedicated session IDs and rollout recorders.
+- Human collaborator role is always included.
 
 #### Session Management
-- Dedicated `ConversationId` for each AI agent
-- Individual session persistence using `RolloutRecorder`
-- Auto-save during agent execution
-- Session recovery and resumption capabilities
+- Each agent operates under an independent `ConversationId`.
+- Rollout recorder flushes output to disk; resume flows are still basic.
 
-#### Token Optimization
-- Local information sharing between agents
-- Cached data reuse to minimize redundant requests
-- Web search preference before human referral
-- Efficient coordination minimizes LLM calls
+#### Token Optimisation (Planned)
+- Share intermediate context between agents.
+- Reuse cached summaries to reduce duplicate LLM calls.
+- Prefer web search before escalating to humans.
 
 #### Casual Human Engagement
 ```rust
@@ -119,45 +115,44 @@ pub enum CasualAction {
 
 ## Testing Status
 
-- ✅ Dynamic role analysis logic tested (rule-based)
-- ⚠️ **Simulated execution** - Uses `tokio::time::sleep()` instead of real LLM calls
-- ✅ Agent creation from role analysis working
-- ⚠️ **Basic coordination** - Limited inter-agent communication
+- ⚠️ `test_multi_agent.rs` provides only a happy-path smoke test.
+- ⚠️ No automated coverage for planning, messaging, or artifact workflows.
+- ⚠️ Tool execution paths remain untested.
 
 ## Risk Assessment
 
-- **⚠️ MEDIUM**: Simulated execution limits real-world testing
-- **⚠️ MEDIUM**: Rule-based planning instead of actual LLM analysis
-- **⚠️ MEDIUM**: Missing user confirmation workflow before execution
+- **⚠️ HIGH**: Lack of tool execution prevents agents from producing artifacts.
+- **⚠️ MEDIUM**: Blocking stdin flow can hang headless executions.
+- **⚠️ MEDIUM**: Rule-based planner may generate irrelevant teams/tasks.
 
 ## Success Metrics Achieved
 
 ### Functional Requirements
 
-1. ✅ **Dynamic role analysis** - Rule-based role assignment using standard taxonomy
-2. ⚠️ **Simulated execution** - Uses sleep instead of real model provider integration
-3. ✅ **Agent identification** - Agent names appear in planning output
-4. ⚠️ **Cross-agent collaboration** - Limited inter-agent communication
-5. ✅ **Configuration integration** - Config loaded and used for system initialization
+1. ⚠️ **Role analysis** – Heuristic only; no LLM integration.
+2. ⚠️ **Execution** – Agents stream model output but cannot use tools.
+3. ✅ **Agent identification** – Agent metadata recorded with sessions.
+4. ⚠️ **Collaboration** – No dependency tracking or shared editing.
+5. ✅ **Configuration integration** – CLI/core share configuration plumbing.
 
 ### Performance Requirements
 
 - ✅ **Role analysis completes quickly** - Rule-based analysis is fast
-- ⚠️ **Simulated execution** - Not using real model providers
-- ✅ **Memory usage scales with number of agents** - Architecture supports scaling
-- ❌ **Session persistence** - Not fully implemented yet
+- ⚠️ **Limited execution** - Streams model text only; no tool calls
+- ✅ **Memory usage scales with number of agents** - Uses lightweight session maps.
+- ⚠️ **Session persistence** - Rollouts flushed, but resume logic is incomplete.
 
 ## Implementation Summary
 
 The casual multi-agent system currently:
 
-1. **Analyzes objectives** using rule-based role assignment with standard taxonomy
-2. **Creates dynamic agent teams** based on task requirements and domain analysis
-3. **Simulates execution** using sleep instead of real model provider calls
-4. **Provides monitoring** for progress tracking and casual human engagement
-5. **Supports session persistence** with dedicated ConversationId per agent
+1. **Analyzes objectives** using rule-based role assignment with the shared taxonomy.
+2. **Creates agent teams** with per-agent sessions and rollout recording.
+3. **Streams model output** without tool usage or collaboration.
+4. **Exposes monitoring** via CLI polling APIs.
+5. **Flushes session data** to disk, though resumptions are still experimental.
 
-The system is in development phase with simulated execution and needs integration with real model providers and user confirmation workflow.
+The system remains an unfinished prototype; significant engineering is required before the multi-agent mode can be relied upon for real work.
 
 ## Usage Examples
 
@@ -207,11 +202,8 @@ codex multi-agent --objective "Develop a machine learning pipeline" --interactiv
 
 ## DeepSeek API Testing
 
-### Test API Key
-For development and testing purposes, use this DeepSeek API key:
-```
-sk-1181374854cb4c96ae891592dfd12815
-```
+### Configuring API Access
+Set the `DEEPSEEK_API_KEY` environment variable with your own DeepSeek credential before running integration tests or CLI flows.
 
 ### Example API Call
 ```bash
