@@ -13,6 +13,20 @@ codex
 
 You can also install via Homebrew (`brew install codex`) or download a platform-specific release directly from our [GitHub Releases](https://github.com/openai/codex/releases).
 
+### Building the CLI from source
+
+If you are iterating inside this repository, build the native CLI directly:
+
+```bash
+cd codex-rs
+cargo build -p codex-cli --release
+
+# Run the freshly built binary
+./target/release/codex --help
+```
+
+The build produces the `codex` binary under `codex-rs/target/release/`. Use that path in the examples below when testing locally.
+
 ## What's new in the Rust CLI
 
 The Rust implementation is now the maintained Codex CLI and serves as the default experience. It includes a number of features that the legacy TypeScript CLI never supported.
@@ -155,15 +169,29 @@ The experimental casual multi-agent system launches a small team of AI agents fo
 #### Basic Usage
 
 ```bash
-# Start a background multi-agent session (text-only output)
+# Launch with a prompted objective (monitor mode by default)
+codex multi-agent
+
+# Headless run with an explicit objective
 codex multi-agent --objective "Build a React frontend with Node.js backend for a todo app"
 
-# Follow along with streaming progress updates
-codex multi-agent --objective "Create a full-stack web application" --monitor
+# Stream progress in the terminal (default behaviour)
+codex multi-agent --objective "Create a full-stack web application"
 
 # Allow ad-hoc human guidance when the system requests attention
-codex multi-agent --objective "Develop a machine learning pipeline" --monitor --interactive
+codex multi-agent --objective "Develop a machine learning pipeline" --interactive
+
+When running from a local build, replace `codex` with `./target/release/codex` (or the full path to your binary). Configure providers inline with `-c` overrides, e.g.:
+
+```bash
+export DEEPSEEK_API_KEY="sk-your-deepseek-key"
+./target/release/codex \
+  -c model_provider=deepseek \
+  -c model=deepseek-reasoner \
+  multi-agent --objective "Refine the repository README" --monitor
 ```
+
+Every run is also logged to `<cwd>/.codex-logs/multi-agent-*.log`, making it easy to review what happened afterwards.
 
 #### Current Capabilities
 

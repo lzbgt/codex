@@ -90,7 +90,7 @@ pub struct MessageDetail {
     pub message_type: String,
 }
 
-const MAX_TOOL_TURNS: usize = 4;
+const MAX_TOOL_TURNS: usize = 8;
 
 /// Detailed task status with full breakdown
 #[derive(Debug, Clone)]
@@ -743,7 +743,7 @@ impl CasualMultiAgentOrchestrator {
     /// Create prompt for model
     async fn create_model_prompt(&self, task_context: &str, role: &str) -> Result<Prompt> {
         let system_message = format!(
-            "You are a {role} agent in a multi-agent collaboration system.\n\n{task_context}"
+            "You are a {role} agent in a multi-agent collaboration system. Take full ownership of your assigned work: plan, implement, and validate results on your own whenever possible. Use the available tools (for example, shell commands) to edit files, run code, and execute tests. Do not invoke git or other version-control commands unless the user explicitly asks for them. Only request human assistance when you have tried all reasonable tool-driven approaches and remain blocked. Provide clear, actionable deliverables and summaries that your fellow agents can consume without additional guidance.\n\n{task_context}"
         );
 
         let user_message = format!(
@@ -903,6 +903,15 @@ impl CasualMultiAgentOrchestrator {
     ) -> Result<FunctionCallOutputPayload> {
         let params: ShellToolCallParams = serde_json::from_str(arguments)
             .map_err(|err| anyhow!("failed to parse shell tool arguments: {err}"))?;
+
+        if let Some(cmd) = params.command.first()
+            && cmd == "git"
+        {
+            return Ok(FunctionCallOutputPayload {
+                content: "Git commands are disabled during multi-agent runs; focus on editing and testing the code directly.".to_string(),
+                success: Some(false),
+            });
+        }
 
         let working_dir = params
             .workdir

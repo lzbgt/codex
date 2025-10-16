@@ -17,9 +17,17 @@ codex exec "your task"
 
 ### Casual Multi-Agent
 ```bash
-# Background session with streaming text output only
-codex multi-agent --objective "your task" --monitor
+# Prompted objective (monitoring by default)
+codex multi-agent
+
+# Explicit objective
+codex multi-agent --objective "your task"
+
+# Opt into interactive guidance
+codex multi-agent --objective "your task" --interactive
 ```
+
+Session transcripts are also written to `<cwd>/.codex-logs/multi-agent-*.log`.
 
 ### DeepSeek Test Path
 ```bash

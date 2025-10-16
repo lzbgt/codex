@@ -1,3 +1,4 @@
+use chrono::Utc;
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
@@ -20,8 +21,15 @@ use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use owo_colors::OwoColorize;
+use std::fs::File;
+use std::fs::{self};
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::PathBuf;
 use supports_color::Stream;
+use tokio::signal;
+use tokio::time::Duration;
+use tokio::time::sleep;
 
 mod mcp_cmd;
 
@@ -203,8 +211,8 @@ struct GenerateTsCommand {
 #[derive(Debug, Parser)]
 struct CasualMultiAgentCommand {
     /// Objective/task for casual multi-agent collaboration
-    #[arg(short, long)]
-    objective: String,
+    #[arg(short, long, value_name = "OBJECTIVE")]
+    objective: Option<String>,
 
     /// Monitor mode - continuously watch progress
     #[arg(short, long)]
@@ -505,11 +513,73 @@ fn print_completion(cmd: CompletionCommand) {
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 
+struct SessionLogger {
+    writer: Option<BufWriter<File>>,
+    path: Option<PathBuf>,
+}
+
+impl SessionLogger {
+    fn new() -> Self {
+        Self {
+            writer: None,
+            path: None,
+        }
+    }
+
+    fn attach(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        let file = File::create(&path)?;
+        self.writer = Some(BufWriter::new(file));
+        self.path = Some(path);
+        Ok(())
+    }
+
+    fn rename(&mut self, new_path: PathBuf) -> anyhow::Result<()> {
+        if let Some(mut writer) = self.writer.take() {
+            writer.flush()?;
+        }
+        if let Some(old_path) = self.path.take() {
+            fs::rename(&old_path, &new_path)?;
+            let file = File::options().append(true).open(&new_path)?;
+            self.writer = Some(BufWriter::new(file));
+            self.path = Some(new_path);
+        }
+        Ok(())
+    }
+
+    fn log(&mut self, message: impl AsRef<str>) {
+        let message = message.as_ref();
+        println!("{}", message);
+        if let Some(writer) = self.writer.as_mut() {
+            if let Err(err) = writeln!(writer, "{}", message) {
+                eprintln!("Failed to write session log entry: {err}");
+            }
+        }
+    }
+
+    fn path(&self) -> Option<&PathBuf> {
+        self.path.as_ref()
+    }
+
+    fn flush(&mut self) {
+        if let Some(writer) = self.writer.as_mut() {
+            let _ = writer.flush();
+        }
+    }
+}
+
+impl Drop for SessionLogger {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 /// Run casual multi-agent collaboration command
 async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> anyhow::Result<()> {
     use codex_core::config::Config;
     use codex_core::multi_agent::casual::CasualAction;
     use codex_core::multi_agent::casual::api;
+    use std::io::Write;
+    use std::io::{self};
     use std::sync::Arc;
 
     // Load configuration
@@ -522,73 +592,136 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
             .await?;
 
     let config = Arc::new(config);
+    let mut session_logger = SessionLogger::new();
+    let log_dir = config.cwd.join(".codex-logs");
+    if let Err(err) = fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "⚠️ Failed to create log directory {}: {err}",
+            log_dir.display()
+        );
+    }
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let initial_log_path = log_dir.join(format!("multi-agent-{timestamp}.log"));
+    if let Err(err) = session_logger.attach(initial_log_path.clone()) {
+        eprintln!(
+            "⚠️ Failed to create log file {}: {err}",
+            initial_log_path.display()
+        );
+    } else {
+        session_logger.log(format!(
+            "📝 Writing session log to {}",
+            initial_log_path.display()
+        ));
+    }
 
     // Initialize casual multi-agent system
     api::init(config.clone()).await?;
 
-    println!("🚀 Starting casual multi-agent collaboration");
-    println!("Objective: {}", casual_cli.objective);
-    println!(
+    let objective = match casual_cli.objective {
+        Some(obj) if !obj.trim().is_empty() => obj.trim().to_string(),
+        Some(_) => {
+            session_logger.log("❌ Objective must not be empty");
+            session_logger.flush();
+            return Err(anyhow::anyhow!("Objective must not be empty"));
+        }
+        None => {
+            print!("Enter objective: ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                session_logger.log("❌ Objective must not be empty");
+                session_logger.flush();
+                return Err(anyhow::anyhow!("Objective must not be empty"));
+            }
+            trimmed.to_string()
+        }
+    };
+
+    let run_interactive = casual_cli.interactive;
+    let run_monitor = casual_cli.monitor || !run_interactive;
+
+    session_logger.log("🚀 Starting casual multi-agent collaboration");
+    session_logger.log(format!("Objective: {}", objective));
+    session_logger.log(format!(
         "Mode: {}",
-        if casual_cli.interactive {
+        if run_interactive {
             "Interactive"
         } else {
-            "Background"
+            "Monitor"
         }
-    );
-    println!();
+    ));
+    session_logger.log(String::new());
 
     // Publish the task
-    let session = api::publish_task(casual_cli.objective).await?;
-    println!("✅ Task published successfully!");
-    println!("Task ID: {}", session.task_id);
-    println!("Status: Planning phase...");
-    println!();
+    let session = api::publish_task(objective.clone()).await?;
+    if session_logger.path().is_some() {
+        let final_log_path =
+            log_dir.join(format!("multi-agent-{timestamp}-{}.log", session.task_id));
+        if let Err(err) = session_logger.rename(final_log_path.clone()) {
+            session_logger.log(format!("⚠️ Failed to update log filename: {err}"));
+        } else {
+            session_logger.log(format!("📝 Updated log file: {}", final_log_path.display()));
+        }
+    }
+    session_logger.log("✅ Task published successfully!");
+    session_logger.log(format!("Task ID: {}", session.task_id));
+    session_logger.log("Status: Planning phase...");
+    session_logger.log(String::new());
 
-    if casual_cli.monitor || casual_cli.interactive {
-        // Monitor mode - continuously watch progress
+    if run_monitor {
         let mut last_progress = 0;
 
         loop {
-            // Get current progress
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    session_logger.log("⛔ Received Ctrl+C – stopping monitoring (agents keep running in the background).");
+                    break;
+                }
+                _ = sleep(Duration::from_secs(5)) => {}
+            }
+
             let snapshot = api::peek_at_progress(&session.task_id).await?;
 
             if snapshot.progress_percentage != last_progress {
-                println!("📊 Progress Update:");
-                println!("  Status: {}", snapshot.status);
-                println!("  Progress: {}%", snapshot.progress_percentage);
-                println!("  Active Agents: {:?}", snapshot.active_agents);
-                println!("  Recent Activity: {}", snapshot.recent_activity);
-                println!(
+                session_logger.log("📊 Progress Update:");
+                session_logger.log(format!("  Status: {}", snapshot.status));
+                session_logger.log(format!("  Progress: {}%", snapshot.progress_percentage));
+                session_logger.log(format!("  Active Agents: {:?}", snapshot.active_agents));
+                session_logger.log(format!("  Recent Activity: {}", snapshot.recent_activity));
+                session_logger.log(format!(
                     "  Human Attention Needed: {}",
                     snapshot.human_attention_needed
-                );
-                println!();
+                ));
+                session_logger.log(String::new());
 
                 last_progress = snapshot.progress_percentage;
             }
 
-            // Check if human attention is needed or if in interactive mode
-            if snapshot.human_attention_needed || casual_cli.interactive {
-                // Get recent messages
+            if snapshot.human_attention_needed || run_interactive {
                 let recent_messages = api::get_recent_messages(&session.task_id, 5).await?;
 
                 if !recent_messages.is_empty() {
-                    println!("💬 Recent Messages:");
+                    session_logger.log("💬 Recent Messages:");
                     for msg in recent_messages.iter().rev() {
                         let to_agent = msg
                             .to_agent
                             .as_ref()
                             .map(|a| format!("→ {}", a))
                             .unwrap_or_default();
-                        println!("  {} {}: {}", msg.from_agent, to_agent, msg.content);
+                        session_logger.log(format!(
+                            "  {} {}: {}",
+                            msg.from_agent, to_agent, msg.content
+                        ));
                     }
-                    println!();
+                    session_logger.log(String::new());
                 }
 
-                // In interactive mode, allow casual human engagement
-                if casual_cli.interactive && snapshot.human_attention_needed {
-                    println!("🤔 Human attention needed! Press Enter to provide guidance...");
+                if run_interactive && snapshot.human_attention_needed {
+                    session_logger.log(
+                        "🤔 Human attention needed! Press Enter to skip or provide guidance...",
+                    );
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input)?;
 
@@ -601,32 +734,20 @@ async fn run_casual_multi_agent_command(casual_cli: CasualMultiAgentCommand) -> 
                             },
                         )
                         .await?;
-                        println!("✅ Guidance provided!");
-                        println!();
+                        session_logger.log("✅ Guidance provided!");
+                        session_logger.log(String::new());
+                    } else {
+                        session_logger.log("↪️ Skipping guidance (empty input).");
+                        session_logger.log(String::new());
                     }
                 }
             }
 
-            // Check if task is completed
             if snapshot.status == "Completed" || snapshot.status == "Failed" {
-                println!("🎉 Task completed!");
+                session_logger.log("🎉 Task completed!");
                 break;
             }
-
-            // Wait before next check
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
-    } else {
-        // Background mode - just show initial status and exit
-        println!("🔮 Task is running in background mode");
-        println!(
-            "Use 'codex casual --monitor --task-id {}' to monitor progress",
-            session.task_id
-        );
-        println!(
-            "Use 'codex casual --interactive --task-id {}' for interactive engagement",
-            session.task_id
-        );
     }
 
     Ok(())
