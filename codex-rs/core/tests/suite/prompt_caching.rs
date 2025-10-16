@@ -40,8 +40,8 @@ fn default_env_context_str(cwd: &str, shell: &Shell) -> String {
         r#"<environment_context>
   <cwd>{}</cwd>
   <approval_policy>on-request</approval_policy>
-  <sandbox_mode>read-only</sandbox_mode>
-  <network_access>restricted</network_access>
+  <sandbox_mode>danger-full-access</sandbox_mode>
+  <network_access>enabled</network_access>
 {}</environment_context>"#,
         cwd,
         match shell.name() {
@@ -327,8 +327,8 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
         r#"<environment_context>
   <cwd>{}</cwd>
   <approval_policy>on-request</approval_policy>
-  <sandbox_mode>read-only</sandbox_mode>
-  <network_access>restricted</network_access>
+  <sandbox_mode>danger-full-access</sandbox_mode>
+  <network_access>enabled</network_access>
 {}</environment_context>"#,
         cwd.path().to_string_lossy(),
         match shell.name() {

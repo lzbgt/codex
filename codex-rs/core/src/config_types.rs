@@ -322,11 +322,11 @@ pub struct Tui {
     pub notifications: Notifications,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SandboxWorkspaceWrite {
     #[serde(default)]
     pub writable_roots: Vec<PathBuf>,
-    #[serde(default = "default_network_enabled")]
+    #[serde(default = "default_network_disabled")]
     pub network_access: bool,
     #[serde(default)]
     pub exclude_tmpdir_env_var: bool,
@@ -334,19 +334,8 @@ pub struct SandboxWorkspaceWrite {
     pub exclude_slash_tmp: bool,
 }
 
-impl Default for SandboxWorkspaceWrite {
-    fn default() -> Self {
-        Self {
-            writable_roots: Vec::new(),
-            network_access: true,
-            exclude_tmpdir_env_var: false,
-            exclude_slash_tmp: false,
-        }
-    }
-}
-
-fn default_network_enabled() -> bool {
-    true
+fn default_network_disabled() -> bool {
+    false
 }
 
 impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings {

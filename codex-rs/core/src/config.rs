@@ -1060,7 +1060,7 @@ impl Config {
 
         let tools_web_search_request = override_tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         let include_view_image_tool = include_view_image_tool
             .or(cfg.tools.as_ref().and_then(|t| t.view_image))
@@ -1327,8 +1327,27 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    use std::collections::HashMap;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    fn sorted_model_providers(
+        map: &HashMap<String, ModelProviderInfo>,
+    ) -> Vec<(String, ModelProviderInfo)> {
+        let mut entries: Vec<_> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
+    fn assert_model_providers_match(
+        expected: &HashMap<String, ModelProviderInfo>,
+        actual: &HashMap<String, ModelProviderInfo>,
+    ) {
+        assert_eq!(
+            sorted_model_providers(expected),
+            sorted_model_providers(actual)
+        );
+    }
 
     #[test]
     fn test_toml_parsing() {
@@ -2090,58 +2109,66 @@ model_verbosity = "high"
             cwd: Some(fixture.cwd()),
             ..Default::default()
         };
-        let o3_profile_config: Config = Config::load_from_base_config_with_overrides(
+        let o3_profile_config = Config::load_from_base_config_with_overrides(
             fixture.cfg.clone(),
             o3_profile_overrides,
             fixture.codex_home(),
         )?;
-        assert_eq!(
-            Config {
-                model: "o3".to_string(),
-                review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
-                model_family: find_family_for_model("o3").expect("known model slug"),
-                model_context_window: Some(200_000),
-                model_max_output_tokens: Some(100_000),
-                model_auto_compact_token_limit: None,
-                model_provider_id: "openai".to_string(),
-                model_provider: fixture.openai_provider.clone(),
-                approval_policy: AskForApproval::Never,
-                sandbox_policy: SandboxPolicy::new_read_only_policy(),
-                shell_environment_policy: ShellEnvironmentPolicy::default(),
-                user_instructions: None,
-                notify: None,
-                cwd: fixture.cwd(),
-                mcp_servers: HashMap::new(),
-                mcp_oauth_credentials_store_mode: Default::default(),
-                model_providers: fixture.model_provider_map.clone(),
-                project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
-                project_doc_fallback_filenames: Vec::new(),
-                codex_home: fixture.codex_home(),
-                history: History::default(),
-                file_opener: UriBasedFileOpener::VsCode,
-                codex_linux_sandbox_exe: None,
-                hide_agent_reasoning: false,
-                show_raw_agent_reasoning: false,
-                model_reasoning_effort: Some(ReasoningEffort::High),
-                model_reasoning_summary: ReasoningSummary::Detailed,
-                model_verbosity: None,
-                chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
-                base_instructions: None,
-                include_plan_tool: false,
-                include_apply_patch_tool: false,
-                tools_web_search_request: false,
-                use_experimental_streamable_shell_tool: false,
-                use_experimental_unified_exec_tool: false,
-                use_experimental_use_rmcp_client: false,
-                include_view_image_tool: true,
-                active_profile: Some("o3".to_string()),
-                windows_wsl_setup_acknowledged: false,
-                disable_paste_burst: false,
-                tui_notifications: Default::default(),
-                otel: OtelConfig::default(),
-            },
-            o3_profile_config
+        let mut expected_config = Config {
+            model: "o3".to_string(),
+            review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
+            model_family: find_family_for_model("o3").expect("known model slug"),
+            model_context_window: Some(200_000),
+            model_max_output_tokens: Some(100_000),
+            model_auto_compact_token_limit: None,
+            model_provider_id: "openai".to_string(),
+            model_provider: fixture.openai_provider.clone(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            shell_environment_policy: ShellEnvironmentPolicy::default(),
+            user_instructions: None,
+            notify: None,
+            cwd: fixture.cwd(),
+            mcp_servers: HashMap::new(),
+            mcp_oauth_credentials_store_mode: Default::default(),
+            model_providers: fixture.model_provider_map.clone(),
+            project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
+            project_doc_fallback_filenames: Vec::new(),
+            codex_home: fixture.codex_home(),
+            history: History::default(),
+            file_opener: UriBasedFileOpener::VsCode,
+            codex_linux_sandbox_exe: None,
+            hide_agent_reasoning: false,
+            show_raw_agent_reasoning: false,
+            model_reasoning_effort: Some(ReasoningEffort::High),
+            model_reasoning_summary: ReasoningSummary::Detailed,
+            model_verbosity: None,
+            chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
+            base_instructions: None,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            tools_web_search_request: false,
+            use_experimental_streamable_shell_tool: false,
+            use_experimental_unified_exec_tool: false,
+            use_experimental_use_rmcp_client: false,
+            include_view_image_tool: true,
+            prompt_cache_key_template: "{conversation_id}".to_string(),
+            active_profile: Some("o3".to_string()),
+            windows_wsl_setup_acknowledged: false,
+            disable_paste_burst: false,
+            tui_notifications: Default::default(),
+            otel: OtelConfig::default(),
+        };
+        assert_model_providers_match(
+            &expected_config.model_providers,
+            &o3_profile_config.model_providers,
         );
+
+        let mut actual_config = o3_profile_config;
+        expected_config.model_providers.clear();
+        actual_config.model_providers.clear();
+
+        assert_eq!(expected_config, actual_config);
         Ok(())
     }
 
@@ -2169,7 +2196,7 @@ model_verbosity = "high"
             model_provider_id: "openai-chat-completions".to_string(),
             model_provider: fixture.openai_chat_completions_provider.clone(),
             approval_policy: AskForApproval::UnlessTrusted,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
@@ -2197,6 +2224,7 @@ model_verbosity = "high"
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
+            prompt_cache_key_template: "{conversation_id}".to_string(),
             active_profile: Some("gpt3".to_string()),
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
@@ -2204,7 +2232,16 @@ model_verbosity = "high"
             otel: OtelConfig::default(),
         };
 
-        assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
+        assert_model_providers_match(
+            &expected_gpt3_profile_config.model_providers,
+            &gpt3_profile_config.model_providers,
+        );
+        let mut expected_no_providers = expected_gpt3_profile_config.clone();
+        let mut actual_no_providers = gpt3_profile_config;
+        expected_no_providers.model_providers.clear();
+        actual_no_providers.model_providers.clear();
+
+        assert_eq!(expected_no_providers, actual_no_providers);
 
         // Verify that loading without specifying a profile in ConfigOverrides
         // uses the default profile from the config file (which is "gpt3").
@@ -2218,8 +2255,16 @@ model_verbosity = "high"
             default_profile_overrides,
             fixture.codex_home(),
         )?;
+        assert_model_providers_match(
+            &expected_gpt3_profile_config.model_providers,
+            &default_profile_config.model_providers,
+        );
+        let mut expected_default = expected_gpt3_profile_config;
+        let mut default_no_providers = default_profile_config;
+        expected_default.model_providers.clear();
+        default_no_providers.model_providers.clear();
 
-        assert_eq!(expected_gpt3_profile_config, default_profile_config);
+        assert_eq!(expected_default, default_no_providers);
         Ok(())
     }
 
@@ -2247,7 +2292,7 @@ model_verbosity = "high"
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
@@ -2275,6 +2320,7 @@ model_verbosity = "high"
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
+            prompt_cache_key_template: "{conversation_id}".to_string(),
             active_profile: Some("zdr".to_string()),
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
@@ -2282,7 +2328,16 @@ model_verbosity = "high"
             otel: OtelConfig::default(),
         };
 
-        assert_eq!(expected_zdr_profile_config, zdr_profile_config);
+        assert_model_providers_match(
+            &expected_zdr_profile_config.model_providers,
+            &zdr_profile_config.model_providers,
+        );
+        let mut expected_no_providers = expected_zdr_profile_config;
+        let mut actual_no_providers = zdr_profile_config;
+        expected_no_providers.model_providers.clear();
+        actual_no_providers.model_providers.clear();
+
+        assert_eq!(expected_no_providers, actual_no_providers);
 
         Ok(())
     }
@@ -2311,7 +2366,7 @@ model_verbosity = "high"
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
             user_instructions: None,
             notify: None,
@@ -2339,6 +2394,7 @@ model_verbosity = "high"
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
             include_view_image_tool: true,
+            prompt_cache_key_template: "{conversation_id}".to_string(),
             active_profile: Some("gpt5".to_string()),
             windows_wsl_setup_acknowledged: false,
             disable_paste_burst: false,
@@ -2346,7 +2402,16 @@ model_verbosity = "high"
             otel: OtelConfig::default(),
         };
 
-        assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);
+        assert_model_providers_match(
+            &expected_gpt5_profile_config.model_providers,
+            &gpt5_profile_config.model_providers,
+        );
+        let mut expected_no_providers = expected_gpt5_profile_config;
+        let mut actual_no_providers = gpt5_profile_config;
+        expected_no_providers.model_providers.clear();
+        actual_no_providers.model_providers.clear();
+
+        assert_eq!(expected_no_providers, actual_no_providers);
 
         Ok(())
     }

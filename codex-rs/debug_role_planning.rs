@@ -1,5 +1,6 @@
 //! Debug script for DeepSeek role planning
 
+use anyhow::Context;
 use codex_core::config::Config;
 use codex_core::multi_agent::AgentManager;
 
@@ -12,7 +13,8 @@ async fn main() -> anyhow::Result<()> {
         codex_core::config::ConfigToml::default(),
         codex_core::config::ConfigOverrides::default(),
         std::path::PathBuf::from("."),
-    ).unwrap();
+    )
+    .context("failed to load default config overrides for debug role planning")?;
 
     let agent_manager = AgentManager::new(config);
 
@@ -25,14 +27,29 @@ async fn main() -> anyhow::Result<()> {
         Ok(analysis) => {
             println!("✅ Role analysis successful!");
             println!("Primary domain: {}", analysis.primary_domain);
-            println!("Primary framework: {}", analysis.primary_framework);
-            println!("Complexity estimate: {}", analysis.complexity_estimate);
-            println!("Required roles: {}", analysis.required_roles.len());
-            for role in &analysis.required_roles {
-                println!("  - {} (priority: {}, effort: {})",
-                    role.role_name, role.priority, role.estimated_effort);
+            if !analysis.primary_standards.is_empty() {
+                println!("Primary standards: {}", analysis.primary_standards.join(", "));
             }
-            println!("Suggested tasks: {}", analysis.suggested_tasks.len());
+            if let Some(score) = analysis.complexity_estimate {
+                println!("Complexity estimate: {score}/10");
+            }
+            println!("Planned roles: {}", analysis.roles.len());
+            for role in &analysis.roles {
+                let key_resp = role
+                    .responsibilities
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| role.summary.clone());
+                println!("  - {} [{}] -> {}", role.name, role.standard_role, key_resp);
+            }
+            println!("Task breakdown ({} steps):", analysis.task_breakdown.len());
+            for (idx, step) in analysis.task_breakdown.iter().enumerate() {
+                println!("    {}. {}", idx + 1, step);
+            }
+            println!("Risk register:");
+            for entry in &analysis.risk_register {
+                println!("    - {} => {}", entry.risk, entry.mitigation);
+            }
         }
         Err(e) => {
             println!("❌ Role analysis failed: {}", e);

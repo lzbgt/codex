@@ -297,7 +297,7 @@ impl SandboxPolicy {
     pub fn new_workspace_write_policy() -> Self {
         SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],
-            network_access: true,
+            network_access: false,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         }

@@ -172,6 +172,7 @@ impl TaskPlanner {
                     .dependencies
                     .iter()
                     .all(|dep| completed_tasks.contains(dep))
+                    && !completed_tasks.contains(&subtask.id)
             })
             .cloned()
             .collect()

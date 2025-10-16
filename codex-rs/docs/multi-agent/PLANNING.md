@@ -1,20 +1,23 @@
 # Multi-Agent System Planning
 
-> **Status:** This document describes the target architecture. The current prototype still uses keyword-based planning, no tool execution, and limited collaboration. Treat the LLM references below as future work unless otherwise noted.
+> **Status:** Dynamic role planning now calls the universal LLM prompt (OpenAI or DeepSeek) with automatic fallback to standards-based heuristics. Tool execution and richer collaboration flows remain in progress.
+>
+> **Security Note:** The multi-agent CLI defaults to `danger-full-access` sandbox mode to allow full tool usage. Only enable it inside repositories and environments you trust.
 
 ## Current Implementation Status
 
 ### Prototype Snapshot
 
-- Role planning uses keyword heuristics; LLM calls are not connected yet.
+- Role planning uses the shared dynamic prompt with LLM-backed analysis; if the provider is unavailable a standards-driven heuristic fallback is applied.
 - Agents stream model text but cannot run tools or coordinate on artifacts.
 - Session persistence and resume flows remain experimental.
 - CLI offers monitoring, but confirmation prompts still block on stdin.
+- Canonical dynamic role-planning prompt captured in `core/dynamic_role_planning_prompt.md`.
 
 ### Near-Term Focus
 
 1. Enable tool usage (shell/file/search) and handle tool call events.
-2. Replace heuristic planning with DeepSeek-backed (or richer heuristic) task decomposition.
+2. Tighten task decomposition hand-off between planner output and agent execution (parallelisation, dependencies).
 3. Remove blocking confirmation and expose async human-in-the-loop controls.
 4. Build automated tests that cover planning, messaging, and artifact workflows.
 
@@ -65,16 +68,16 @@ pub struct TaskSession {
 
 #### 2. Planner
 
-- **Current:** Keyword heuristics assign canned roles and tasks.
-- **Target:** LLM analyses the objective, creates task breakdowns, and assigns roles dynamically.
+- **Current:** Universal role-planning prompt executed via configured LLM provider (OpenAI ChatGPT or DeepSeek). Produces domain, standards, roles, tasks, and risks; heuristics fill gaps when the API is unreachable.
+- **Target:** Extend planner to reason about dependencies, surface richer metadata (success criteria, metrics), and share artefacts directly with downstream agents.
 
 #### 3. Agent System
 
 ```rust
 pub struct Agent {
     pub id: String,
-    pub role: String,           // "backend-developer", "frontend-developer", "qa-engineer", "human"
-    pub expertise: Vec<String>, // Dynamic from LLM planning
+    pub role: String,           // e.g. "Project Manager", "Technical Lead", "Human Collaborator"
+    pub expertise: Vec<String>, // Derived from standards, competencies, and prompt output
     pub status: AgentStatus,
     pub current_task: Option<String>,
     pub agent_type: AgentType,  // AI or Human

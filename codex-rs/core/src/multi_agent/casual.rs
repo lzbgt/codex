@@ -24,6 +24,7 @@ use crate::client_common::Prompt;
 use crate::config::Config;
 use crate::conversation_manager::ConversationManager;
 use crate::model_family::derive_default_model_family;
+use crate::multi_agent::agents::RoleAnalysis;
 use crate::rollout::RolloutRecorder;
 
 /// Casual human engagement actions
@@ -222,6 +223,7 @@ pub struct CasualMultiAgentOrchestrator {
     auth_manager: Arc<crate::auth::AuthManager>,
 }
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 impl CasualMultiAgentOrchestrator {
     /// Create a new casual multi-agent orchestrator
     pub fn new(config: Arc<Config>) -> Result<Self> {
@@ -917,20 +919,55 @@ impl CasualMultiAgentOrchestrator {
         let agent_manager = crate::multi_agent::AgentManager::new((*self.config).clone());
         let role_analysis = agent_manager.analyze_objective(objective).await?;
 
+        let RoleAnalysis {
+            primary_domain,
+            primary_standards,
+            roles: planned_roles,
+            task_breakdown,
+            risk_register,
+            complexity_estimate,
+        } = role_analysis;
+
         let mut roles = Vec::new();
+        let default_provider = self.config.model_provider_id.clone();
+        let default_model = self.config.model.clone();
 
         // Convert role analysis to agent roles
-        for role_assignment in role_analysis.required_roles {
-            if let Some(role_def) = agent_manager.get_role_definition(&role_assignment.role_name) {
-                roles.push(AgentRole {
-                    role: role_assignment.role_name.clone(),
-                    expertise: role_def.capabilities.clone(),
-                    primary_task: role_assignment.customized_description.clone(),
-                    model_provider: role_def.suggested_provider.clone(),
-                    model: role_def.suggested_model.clone(),
-                    agent_type: AgentType::AI,
-                });
+        for role_assignment in planned_roles.iter() {
+            let role_def = agent_manager.get_role_definition(&role_assignment.standard_role);
+            let mut expertise = Vec::new();
+            if let Some(definition) = role_def {
+                expertise.extend(definition.capabilities.clone());
             }
+            expertise.extend(role_assignment.core_competencies.clone());
+            expertise.sort();
+            expertise.dedup();
+
+            let mut model_provider = default_provider.clone();
+            let mut model = default_model.clone();
+            if let Some(definition) = role_def {
+                if let Some(provider) = &definition.suggested_provider {
+                    model_provider = provider.clone();
+                }
+                if let Some(model_override) = &definition.suggested_model {
+                    model = model_override.clone();
+                }
+            }
+
+            let primary_task = role_assignment
+                .responsibilities
+                .first()
+                .cloned()
+                .unwrap_or_else(|| role_assignment.summary.clone());
+
+            roles.push(AgentRole {
+                role: role_assignment.name.clone(),
+                expertise,
+                primary_task,
+                model_provider,
+                model,
+                agent_type: AgentType::AI,
+            });
         }
 
         // Always include human agent for casual engagement
@@ -947,9 +984,24 @@ impl CasualMultiAgentOrchestrator {
             agent_type: AgentType::Human,
         });
 
+        println!("\n🔎 Role planning summary");
+        println!("  • Primary domain: {primary_domain}");
+        if !primary_standards.is_empty() {
+            println!("  • Primary standards: {}", primary_standards.join(", "));
+        }
+        if let Some(score) = complexity_estimate {
+            println!("  • Complexity estimate: {score}/10");
+        }
+        if !risk_register.is_empty() {
+            println!("  • Key risks:");
+            for entry in &risk_register {
+                println!("     - {} -> {}", entry.risk, entry.mitigation);
+            }
+        }
+
         Ok(AgentPlan {
             roles,
-            task_breakdown: role_analysis.suggested_tasks,
+            task_breakdown,
         })
     }
 

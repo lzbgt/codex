@@ -19,6 +19,7 @@ use crate::exec::StdoutStream;
 use crate::executor::ExecutionMode;
 use crate::executor::errors::ExecError;
 use crate::executor::linkers::PreparedExec;
+use crate::apply_patch::CODEX_APPLY_PATCH_ARG1;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ApplyPatchCommandContext;
 use crate::tools::context::ExecCommandContext;
@@ -124,6 +125,11 @@ pub(crate) async fn handle_container_exec_with_params(
         otel_event_manager,
     };
 
+    let apply_patch_invocation = apply_patch_exec.is_some()
+        || command_for_display
+            .iter()
+            .any(|arg| arg.contains(CODEX_APPLY_PATCH_ARG1));
+
     let mode = match apply_patch_exec {
         Some(exec) => ExecutionMode::ApplyPatch(exec),
         None => ExecutionMode::Shell,
@@ -171,7 +177,12 @@ pub(crate) async fn handle_container_exec_with_params(
             FunctionCallError::RespondToModel(format_exec_output_apply_patch(&output)),
         ),
         Err(ExecError::Codex(err)) => {
-            let message = format!("execution error: {err:?}");
+            let mut message = format!("execution error: {err:?}");
+            if apply_patch_invocation {
+                message.push_str(
+                    "\nHint: ensure `codex-run-as-apply-patch` is available on your PATH.",
+                );
+            }
             Err(FunctionCallError::RespondToModel(format_exec_output(
                 &message,
             )))
