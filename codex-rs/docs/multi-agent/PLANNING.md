@@ -1,20 +1,8 @@
 # Multi-Agent System Planning
 
-> **Status:** Dynamic role planning now calls the universal LLM prompt (OpenAI or DeepSeek) with automatic fallback to standards-based heuristics. Tool execution and richer collaboration flows remain in progress.
->
-> **Security Note:** The multi-agent CLI defaults to `danger-full-access` sandbox mode to allow full tool usage. Only enable it inside repositories and environments you trust.
+> For current progress updates, see [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md). This document records the roadmap, dependencies, and design considerations that guide upcoming work.
 
-## Current Implementation Status
-
-### Prototype Snapshot
-
-- Role planning uses the shared dynamic prompt with LLM-backed analysis; if the provider is unavailable a standards-driven heuristic fallback is applied.
-- Agents stream model text but cannot run tools or coordinate on artifacts.
-- Session persistence and resume flows remain experimental.
-- CLI offers monitoring, but confirmation prompts still block on stdin.
-- Canonical dynamic role-planning prompt captured in `core/dynamic_role_planning_prompt.md`.
-
-### Near-Term Focus
+## Near-Term Focus
 
 1. Enable tool usage (shell/file/search) and handle tool call events.
 2. Tighten task decomposition hand-off between planner output and agent execution (parallelisation, dependencies).

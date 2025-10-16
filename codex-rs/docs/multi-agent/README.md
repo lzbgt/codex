@@ -1,23 +1,21 @@
 # Multi-Agent System
 
+> For day-to-day status updates, see [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md). This README is a stable orientation guide.
+
 ## Quick Start
 
-**Casual Multi-Agent with Dynamic Role Planning**
 ```bash
-codex multi-agent --objective "task" --monitor
+codex multi-agent --objective "build feature X" --monitor
 ```
 
-## Current Capabilities
-- **LLM-Backed Role Planning**: Objectives are analysed with the universal dynamic role planning prompt. Codex automatically calls the configured provider (OpenAI ChatGPT or DeepSeek) and falls back to standards-based heuristics when an API response is unavailable.
-- **Casual Human Engagement**: Human can drop in/out without formal joining.
-- **Session Persistence (partial)**: Sessions are created and auto-saved, but recovery flows are still experimental.
-- **Web Search Preference (planned)**: Hooks exist, but agents currently execute without tool usage or web search.
-- **DeepSeek Provider (supported)**: DeepSeek credentials are honoured for planning and execution alongside OpenAI and other configured providers.
-- **Danger-Mode Sandbox**: The default permission profile is `danger-full-access`, granting read/write/execute and tool execution so multi-agent flows can run without manual approvals. Only enable this profile inside environments you trust.
-
-> **Note:** The multi-agent system is an early prototype. Planning, collaboration, and tool execution are still largely stubbed out and require significant follow-up work before production use.
+## System Highlights
+- **Dynamic Role Planning** – Objectives are normalised via the universal prompt and mapped to a standards-informed taxonomy. The planner integrates with OpenAI or DeepSeek and falls back to deterministic heuristics when disabled.
+- **Casual Collaboration** – Humans can drop information, supply data, or suggest tasks without formally joining. Messages and artifacts are captured in the session state for later review.
+- **Persistence Hooks** – Sessions flush rollout logs and agent transcripts; manual resume is supported while richer recovery flows continue to evolve.
+- **Danger-Mode Sandbox** – The CLI defaults to `danger-full-access`, enabling unrestricted read/write/execute and tool usage. Override the sandbox if you need stricter isolation.
 
 ## Documentation
-- [PLANNING.md](./PLANNING.md) - Canonical status & next steps
-- [IMPLEMENTATION.md](./IMPLEMENTATION.md) - Technical details
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - System design
+- [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) – Future work, current gaps, and backlog checkpoints
+- [IMPLEMENTATION.md](./IMPLEMENTATION.md) – Architecture and component details
+- [PLANNING.md](./PLANNING.md) – Roadmap and dependency planning
+- [ARCHITECTURE.md](./ARCHITECTURE.md) – Conceptual diagrams and system boundaries
