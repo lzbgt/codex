@@ -13,23 +13,22 @@ codex
 codex exec "your task"
 ```
 
-## Multi-Agent Systems
+## Multi-Agent Systems (Experimental)
 
-### Casual Multi-Agent (Recommended)
+### Casual Multi-Agent
 ```bash
+# Background session with streaming text output only
 codex multi-agent --objective "your task" --monitor
 ```
 
-### DeepSeek Test
+### DeepSeek Test Path
 ```bash
 export DEEPSEEK_API_KEY=your_key
-codex multi-agent --objective "Test DeepSeek" --monitor --config model_provider=deepseek --config model=deepseek-reasoner
+codex -c model_provider=deepseek -c model=deepseek-reasoner \
+  multi-agent --objective "Test DeepSeek" --monitor
 ```
 
-### Traditional Multi-Agent
-```bash
-codex multi-agent --agents agents.toml --objective "task"
-```
+> Only the `shell` tool is wired up today; apply_patch and richer artifact tooling are still under development.
 
 ## Key Features
 - Multi-agent collaboration

@@ -187,7 +187,7 @@ fn create_unified_exec_tool() -> ToolSpec {
     })
 }
 
-fn create_shell_tool() -> ToolSpec {
+pub(crate) fn create_shell_tool() -> ToolSpec {
     let mut properties = BTreeMap::new();
     properties.insert(
         "command".to_string(),

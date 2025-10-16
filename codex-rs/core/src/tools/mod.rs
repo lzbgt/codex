@@ -7,6 +7,7 @@ pub mod spec;
 
 use crate::apply_patch;
 use crate::apply_patch::ApplyPatchExec;
+use crate::apply_patch::CODEX_APPLY_PATCH_ARG1;
 use crate::apply_patch::InternalApplyPatchInvocation;
 use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::codex::Session;
@@ -19,7 +20,6 @@ use crate::exec::StdoutStream;
 use crate::executor::ExecutionMode;
 use crate::executor::errors::ExecError;
 use crate::executor::linkers::PreparedExec;
-use crate::apply_patch::CODEX_APPLY_PATCH_ARG1;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ApplyPatchCommandContext;
 use crate::tools::context::ExecCommandContext;

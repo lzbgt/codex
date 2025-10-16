@@ -8,10 +8,13 @@
 //! - Zero breaking changes to standalone Codex
 
 use anyhow::Result;
+use anyhow::anyhow;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ShellToolCallParams;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -21,11 +24,20 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::client_common::Prompt;
+use crate::client_common::ResponseEvent;
+use crate::client_common::tools::ToolSpec;
 use crate::config::Config;
 use crate::conversation_manager::ConversationManager;
+use crate::exec::ExecParams;
+use crate::exec::SandboxType;
+use crate::exec::process_exec_tool_call;
+use crate::exec_env::create_env;
 use crate::model_family::derive_default_model_family;
 use crate::multi_agent::agents::RoleAnalysis;
 use crate::rollout::RolloutRecorder;
+use crate::tools::format_exec_output_apply_patch;
+use crate::tools::spec::create_shell_tool;
+use codex_protocol::protocol::SandboxPolicy;
 
 /// Casual human engagement actions
 #[derive(Debug, Clone)]
@@ -77,6 +89,8 @@ pub struct MessageDetail {
     pub content: String,
     pub message_type: String,
 }
+
+const MAX_TOOL_TURNS: usize = 4;
 
 /// Detailed task status with full breakdown
 #[derive(Debug, Clone)]
@@ -408,10 +422,31 @@ impl CasualMultiAgentOrchestrator {
             .iter()
             .any(|msg| msg.requires_human_attention);
 
-        // Calculate progress percentage (simplified)
+        let total_ai_agents = session
+            .agents
+            .values()
+            .filter(|agent| agent.agent_type == AgentType::AI)
+            .count();
+        let completed_ai_agents = session
+            .agents
+            .values()
+            .filter(|agent| {
+                agent.agent_type == AgentType::AI && agent.status == AgentStatus::Completed
+            })
+            .count();
+
         let progress_percentage = match session.status {
             TaskStatus::Planning => 10,
-            TaskStatus::InProgress => 50,
+            TaskStatus::InProgress => {
+                if total_ai_agents == 0 {
+                    50
+                } else if completed_ai_agents == 0 {
+                    25
+                } else {
+                    let raw = ((completed_ai_agents * 100) / total_ai_agents) as u8;
+                    raw.max(25u8).min(95u8)
+                }
+            }
             TaskStatus::Completed => 100,
             TaskStatus::Failed => 0,
             TaskStatus::PausedForHumanInput => 30,
@@ -562,64 +597,85 @@ impl CasualMultiAgentOrchestrator {
 
     /// Execute agent work in background with real model execution
     async fn execute_agent_work(&self, task_id: &str, agent_id: &str) -> Result<()> {
-        // Auto-save session state at the beginning
         self.auto_save_session_state(task_id).await?;
 
-        // Get agent and task information
         let (agent, task_description) = {
             let sessions = self.active_sessions.read().await;
             let session = sessions
                 .get(task_id)
-                .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
+                .ok_or_else(|| anyhow!("Task not found: {}", task_id))?;
             let agent = session
                 .agents
                 .get(agent_id)
-                .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_id))?;
+                .ok_or_else(|| anyhow!("Agent not found: {}", agent_id))?;
             let task_description = agent.current_task.clone().unwrap_or_default();
             (agent.clone(), task_description)
         };
 
-        // Skip execution for human agents
         if agent.agent_type == AgentType::Human {
             return Ok(());
         }
 
-        println!("Agent '{agent_id}' starting work on task: {task_description}");
+        self.set_agent_status(task_id, agent_id, AgentStatus::Working)
+            .await?;
 
-        // Agent sends progress update
+        println!("Agent '{agent_id}' starting work on task: {task_description}");
         self.agent_send_message(
             task_id,
             agent_id,
-            None, // Broadcast to all
+            None,
             format!("Starting work on: {task_description}"),
             MessageType::StatusReport,
             false,
         )
         .await?;
 
-        // Auto-save after progress update
         self.auto_save_session_state(task_id).await?;
 
-        // Build comprehensive prompt for the agent
-        let prompt = self
+        let prompt_context = self
             .build_agent_prompt(task_id, agent_id, &task_description)
             .await?;
 
-        // Execute real model call using the agent's configured provider
-        let response_content = self.execute_model_call(&agent, &prompt).await?;
+        let provider_info = self.get_provider_info(&agent.model_provider).await?;
+        let model_client = self.create_model_client(&agent, &provider_info).await?;
+        let initial_prompt = self
+            .create_model_prompt(&prompt_context, &agent.role)
+            .await?;
 
-        // Agent sends completion update
+        let response_content = match self
+            .run_agent_conversation(task_id, agent_id, &model_client, initial_prompt.input)
+            .await
+        {
+            Ok(content) => content,
+            Err(err) => {
+                let error_text = format!("Agent execution failed: {err}");
+                self.agent_send_message(
+                    task_id,
+                    agent_id,
+                    None,
+                    error_text.clone(),
+                    MessageType::StatusReport,
+                    true,
+                )
+                .await?;
+                self.mark_agent_failed(task_id, agent_id).await?;
+                self.auto_save_session_state(task_id).await?;
+                return Err(err);
+            }
+        };
+
+        let summary = summarize_for_feed(&response_content);
         self.agent_send_message(
             task_id,
             agent_id,
             None,
-            format!("Completed task: {task_description}. Result: {response_content}"),
+            format!("Completed task: {task_description}. Result summary: {summary}"),
             MessageType::StatusReport,
             false,
         )
         .await?;
 
-        // Final auto-save after completion
+        self.mark_agent_completed(task_id, agent_id).await?;
         self.auto_save_session_state(task_id).await?;
 
         println!(
@@ -631,48 +687,20 @@ impl CasualMultiAgentOrchestrator {
         Ok(())
     }
 
-    /// Execute real model call using the agent's configured provider
-    async fn execute_model_call(&self, agent: &CasualAgent, prompt: &str) -> Result<String> {
-        println!(
-            "Agent '{}' executing model call with provider: {}, model: {}",
-            agent.id, agent.model_provider, agent.model
-        );
-        println!("Prompt length: {} characters", prompt.len());
-
-        // Get the provider info from config
-        let provider_info = self.get_provider_info(&agent.model_provider).await?;
-
-        // Create model client for the agent
-        let model_client = self.create_model_client(agent, &provider_info).await?;
-
-        // Create prompt for the model
-        let model_prompt = self.create_model_prompt(prompt, &agent.role).await?;
-
-        // Execute the actual model call
-        let response = self
-            .execute_real_model_call(&model_client, &model_prompt)
-            .await?;
-
-        println!(
-            "Agent '{}' completed model call with response length: {} characters",
-            agent.id,
-            response.len()
-        );
-
-        Ok(response)
-    }
-
     /// Get provider info from config
     async fn get_provider_info(
         &self,
         provider_name: &str,
     ) -> Result<crate::model_provider_info::ModelProviderInfo> {
-        let providers = crate::model_provider_info::built_in_model_providers();
+        if let Some(provider) = self.config.model_providers.get(provider_name) {
+            return Ok(provider.clone());
+        }
 
+        let providers = crate::model_provider_info::built_in_model_providers();
         providers
             .get(provider_name)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", provider_name))
+            .ok_or_else(|| anyhow!("Unknown provider: {}", provider_name))
     }
 
     /// Create model client for agent
@@ -746,51 +774,266 @@ impl CasualMultiAgentOrchestrator {
         })
     }
 
-    /// Execute real model call using the model client
-    async fn execute_real_model_call(
-        &self,
-        model_client: &crate::client::ModelClient,
-        prompt: &Prompt,
-    ) -> Result<String> {
-        use crate::client_common::ResponseEvent;
+    fn default_tool_specs(&self) -> Vec<ToolSpec> {
+        vec![create_shell_tool()]
+    }
 
-        let mut response_stream = model_client.stream(prompt).await?;
-        let mut response_content = String::new();
-
-        while let Some(event_result) = response_stream.rx_event.recv().await {
-            match event_result {
-                Ok(ResponseEvent::OutputTextDelta(delta)) => {
-                    response_content.push_str(&delta);
+    fn resolve_sandbox_type(&self) -> SandboxType {
+        match &self.config.sandbox_policy {
+            SandboxPolicy::DangerFullAccess => SandboxType::None,
+            SandboxPolicy::ReadOnly | SandboxPolicy::WorkspaceWrite { .. } => {
+                #[cfg(target_os = "macos")]
+                {
+                    SandboxType::MacosSeatbelt
                 }
-                Ok(ResponseEvent::OutputItemDone(item)) => {
-                    if let codex_protocol::models::ResponseItem::Message { content, .. } = item {
-                        for content_item in content {
-                            if let codex_protocol::models::ContentItem::OutputText { text } =
-                                content_item
-                            {
-                                response_content.push_str(&text);
-                            }
-                        }
-                    }
+                #[cfg(target_os = "linux")]
+                {
+                    SandboxType::LinuxSeccomp
                 }
-                Ok(ResponseEvent::Completed { .. }) => {
-                    // Response completed, break out of loop
-                    break;
-                }
-                Ok(_) => {
-                    // Ignore other event types
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Model call failed: {}", e));
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                {
+                    SandboxType::None
                 }
             }
         }
+    }
 
-        if response_content.is_empty() {
-            return Err(anyhow::anyhow!("No response content received from model"));
+    fn resolve_workdir(&self, workdir: &str) -> PathBuf {
+        let candidate = PathBuf::from(workdir);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            self.config.cwd.join(candidate)
+        }
+    }
+
+    async fn run_agent_conversation(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        model_client: &crate::client::ModelClient,
+        mut conversation: Vec<ResponseItem>,
+    ) -> Result<String> {
+        for _ in 0..MAX_TOOL_TURNS {
+            let prompt = Prompt {
+                input: conversation.clone(),
+                tools: self.default_tool_specs(),
+                parallel_tool_calls: false,
+                base_instructions_override: None,
+                output_schema: None,
+            };
+
+            let mut response_stream = model_client.stream(&prompt).await?;
+            let mut pending_tool: Option<ResponseItem> = None;
+            let mut final_message: Option<ResponseItem> = None;
+
+            while let Some(event_result) = response_stream.rx_event.recv().await {
+                match event_result {
+                    Ok(ResponseEvent::OutputItemDone(item)) => match &item {
+                        ResponseItem::FunctionCall { .. } => {
+                            pending_tool = Some(item.clone());
+                        }
+                        ResponseItem::Message { .. } => {
+                            final_message = Some(item.clone());
+                        }
+                        _ => {}
+                    },
+                    Ok(ResponseEvent::Completed { .. }) => break,
+                    Ok(ResponseEvent::OutputTextDelta(_)) => {}
+                    Ok(_) => {}
+                    Err(err) => return Err(anyhow!("Model stream error: {err}")),
+                }
+            }
+
+            if let Some(function_call) = pending_tool {
+                conversation.push(function_call.clone());
+                let output_payload = self
+                    .handle_tool_call(task_id, agent_id, &function_call)
+                    .await?;
+                let call_id = if let ResponseItem::FunctionCall { call_id, .. } = &function_call {
+                    call_id.clone()
+                } else {
+                    String::new()
+                };
+                conversation.push(ResponseItem::FunctionCallOutput {
+                    call_id,
+                    output: output_payload,
+                });
+                continue;
+            }
+
+            if let Some(message) = final_message {
+                let text = extract_message_text(&message).unwrap_or_default();
+                conversation.push(message);
+                return Ok(text);
+            }
+
+            return Err(anyhow!(
+                "Model response produced neither tool call nor assistant message"
+            ));
         }
 
-        Ok(response_content)
+        Err(anyhow!("Tool execution loop exceeded maximum iterations"))
+    }
+
+    async fn handle_tool_call(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        call: &ResponseItem,
+    ) -> Result<FunctionCallOutputPayload> {
+        match call {
+            ResponseItem::FunctionCall {
+                name, arguments, ..
+            } => match name.as_str() {
+                "shell" | "container.exec" | "local_shell" => {
+                    self.run_shell_tool(task_id, agent_id, arguments).await
+                }
+                other => Err(anyhow!("Unsupported tool call: {other}")),
+            },
+            _ => Err(anyhow!("Expected function call item for tool execution")),
+        }
+    }
+
+    async fn run_shell_tool(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        arguments: &str,
+    ) -> Result<FunctionCallOutputPayload> {
+        let params: ShellToolCallParams = serde_json::from_str(arguments)
+            .map_err(|err| anyhow!("failed to parse shell tool arguments: {err}"))?;
+
+        let working_dir = params
+            .workdir
+            .as_deref()
+            .map(|wd| self.resolve_workdir(wd))
+            .unwrap_or_else(|| self.config.cwd.clone());
+
+        let command_preview = params.command.join(" ");
+        self.agent_send_message(
+            task_id,
+            agent_id,
+            None,
+            format!("Executing shell command: {command_preview}"),
+            MessageType::TaskUpdate,
+            false,
+        )
+        .await?;
+
+        let exec_params = ExecParams {
+            command: params.command.clone(),
+            cwd: working_dir,
+            timeout_ms: params.timeout_ms,
+            env: create_env(&self.config.shell_environment_policy),
+            with_escalated_permissions: params.with_escalated_permissions,
+            justification: params.justification.clone(),
+        };
+
+        let sandbox_type = self.resolve_sandbox_type();
+
+        let exec_result = process_exec_tool_call(
+            exec_params,
+            sandbox_type,
+            &self.config.sandbox_policy,
+            &self.config.cwd,
+            &self.config.codex_linux_sandbox_exe,
+            None,
+        )
+        .await;
+
+        match exec_result {
+            Ok(output) => {
+                let content = format_exec_output_apply_patch(&output);
+                let summary = summarize_for_feed(&content);
+                self.agent_send_message(
+                    task_id,
+                    agent_id,
+                    None,
+                    format!("Shell output summary: {summary}"),
+                    MessageType::TaskUpdate,
+                    false,
+                )
+                .await?;
+                self.auto_save_session_state(task_id).await?;
+                Ok(FunctionCallOutputPayload {
+                    content,
+                    success: Some(output.exit_code == 0),
+                })
+            }
+            Err(err) => {
+                let message = format!("Shell command failed: {err}");
+                self.agent_send_message(
+                    task_id,
+                    agent_id,
+                    None,
+                    message.clone(),
+                    MessageType::TaskUpdate,
+                    true,
+                )
+                .await?;
+                self.auto_save_session_state(task_id).await?;
+                Ok(FunctionCallOutputPayload {
+                    content: message,
+                    success: Some(false),
+                })
+            }
+        }
+    }
+
+    async fn set_agent_status(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        status: AgentStatus,
+    ) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task not found: {task_id}"))?;
+        let agent = session
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("Agent not found: {agent_id}"))?;
+        agent.status = status;
+        Ok(())
+    }
+
+    async fn mark_agent_completed(&self, task_id: &str, agent_id: &str) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task not found: {task_id}"))?;
+        let agent = session
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("Agent not found: {agent_id}"))?;
+        agent.status = AgentStatus::Completed;
+        agent.current_task = None;
+
+        let all_done = session
+            .agents
+            .values()
+            .filter(|agent| agent.agent_type == AgentType::AI)
+            .all(|agent| agent.status == AgentStatus::Completed);
+        if all_done {
+            session.status = TaskStatus::Completed;
+        }
+        Ok(())
+    }
+
+    async fn mark_agent_failed(&self, task_id: &str, agent_id: &str) -> Result<()> {
+        let mut sessions = self.active_sessions.write().await;
+        let session = sessions
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow!("Task not found: {task_id}"))?;
+        let agent = session
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow!("Agent not found: {agent_id}"))?;
+        agent.status = AgentStatus::Blocked;
+        session.status = TaskStatus::PausedForHumanInput;
+        Ok(())
     }
 
     /// Build a comprehensive prompt for an agent
@@ -1286,6 +1529,43 @@ impl CasualMultiAgentOrchestrator {
             .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
 
         Ok(session.session_persistence_path.clone())
+    }
+}
+
+fn summarize_for_feed(text: &str) -> String {
+    const LIMIT: usize = 240;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "(no output)".to_string();
+    }
+
+    let mut chars = trimmed.chars();
+    let mut snippet = String::new();
+    for _ in 0..LIMIT {
+        match chars.next() {
+            Some(ch) => snippet.push(ch),
+            None => return snippet,
+        }
+    }
+
+    if chars.next().is_some() {
+        snippet.push('…');
+    }
+
+    snippet
+}
+
+fn extract_message_text(item: &ResponseItem) -> Option<String> {
+    if let ResponseItem::Message { content, .. } = item {
+        let mut text = String::new();
+        for entry in content {
+            if let ContentItem::OutputText { text: segment } = entry {
+                text.push_str(segment);
+            }
+        }
+        Some(text)
+    } else {
+        None
     }
 }
 
