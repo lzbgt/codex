@@ -444,7 +444,7 @@ impl CasualMultiAgentOrchestrator {
                     25
                 } else {
                     let raw = ((completed_ai_agents * 100) / total_ai_agents) as u8;
-                    raw.max(25u8).min(95u8)
+                    raw.clamp(25, 95)
                 }
             }
             TaskStatus::Completed => 100,
