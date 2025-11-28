@@ -499,84 +499,43 @@ impl AgentManager {
         let mut domain_mappings = HashMap::new();
         domain_mappings.insert(
             "software_engineering".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "technical_lead".to_string(),
-                "quality_engineer".to_string(),
-            ],
+            vec!["technical_lead".to_string()],
         );
         domain_mappings.insert(
             "data_science".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "data_scientist".to_string(),
-                "domain_expert".to_string(),
-            ],
+            vec!["data_scientist".to_string()],
         );
         domain_mappings.insert(
             "product_design".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "product_designer".to_string(),
-                "human_reviewer".to_string(),
-            ],
+            vec!["product_designer".to_string()],
         );
         domain_mappings.insert(
             "documentation".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "human_reviewer".to_string(),
-                "compliance_officer".to_string(),
-            ],
+            vec!["domain_expert".to_string()],
         );
         domain_mappings.insert(
             "business_strategy".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "domain_expert".to_string(),
-                "compliance_officer".to_string(),
-            ],
+            vec!["domain_expert".to_string()],
         );
         domain_mappings.insert(
             "operations".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "operations_engineer".to_string(),
-                "safety_officer".to_string(),
-            ],
+            vec!["operations_engineer".to_string()],
         );
         domain_mappings.insert(
             "infrastructure".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "solution_architect".to_string(),
-                "operations_engineer".to_string(),
-            ],
+            vec!["technical_lead".to_string()],
         );
         domain_mappings.insert(
             "compliance".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "compliance_officer".to_string(),
-                "human_reviewer".to_string(),
-            ],
+            vec!["compliance_officer".to_string()],
         );
+        domain_mappings.insert("education".to_string(), vec!["domain_expert".to_string()]);
+        domain_mappings.insert("research".to_string(), vec!["domain_expert".to_string()]);
         domain_mappings.insert(
-            "education".to_string(),
-            vec!["project_manager".to_string(), "domain_expert".to_string()],
+            "construction".to_string(),
+            vec!["technical_lead".to_string(), "safety_officer".to_string()],
         );
-        domain_mappings.insert(
-            "research".to_string(),
-            vec![
-                "project_manager".to_string(),
-                "domain_expert".to_string(),
-                "data_scientist".to_string(),
-            ],
-        );
-        domain_mappings.insert(
-            "other".to_string(),
-            vec!["project_manager".to_string(), "domain_expert".to_string()],
-        );
+        domain_mappings.insert("other".to_string(), vec!["technical_lead".to_string()]);
 
         RoleTaxonomy {
             roles,
@@ -598,7 +557,7 @@ impl AgentManager {
 
         match self.invoke_planning_llm(trimmed).await {
             Ok(raw) => match self.parse_planning_response(&raw, trimmed) {
-                Ok(analysis) => Ok(analysis),
+                Ok(analysis) => Ok(self.finalize_analysis(trimmed, analysis)),
                 Err(parse_err) => {
                     warn!(
                         "Failed to parse planning response. Falling back to heuristic plan: {parse_err:?}"
@@ -775,14 +734,14 @@ impl AgentManager {
                 .filter(|step| !step.trim().is_empty())
                 .collect()
         };
-        if task_breakdown.len() < 5 {
+        if task_breakdown.len() < 3 {
             let mut fallback_steps =
                 self.build_task_breakdown(objective, &roles, &primary_standards);
             task_breakdown.append(&mut fallback_steps);
             task_breakdown.dedup();
         }
-        if task_breakdown.len() > 6 {
-            task_breakdown.truncate(6);
+        if task_breakdown.len() > 4 {
+            task_breakdown.truncate(4);
         }
 
         let complexity_estimate =
@@ -848,14 +807,16 @@ impl AgentManager {
         let complexity_estimate =
             self.estimate_complexity(objective, roles.len(), task_breakdown.len());
 
-        RoleAnalysis {
+        let analysis = RoleAnalysis {
             primary_domain,
             primary_standards,
             roles,
             task_breakdown,
             risk_register,
             complexity_estimate,
-        }
+        };
+
+        self.finalize_analysis(objective, analysis)
     }
 
     fn infer_domain(&self, objective: &str) -> String {
@@ -863,10 +824,18 @@ impl AgentManager {
 
         if o.contains("software")
             || o.contains("code")
+            || o.contains("python")
+            || o.contains("rust")
+            || o.contains("script")
+            || o.contains("function")
+            || o.contains("program")
             || o.contains("app")
             || o.contains("backend")
             || o.contains("frontend")
             || o.contains("web")
+            || o.contains("platform")
+            || o.contains("system")
+            || o.contains("service")
         {
             "software_engineering".to_string()
         } else if o.contains("data")
@@ -1047,49 +1016,181 @@ impl AgentManager {
         &self,
         objective: &str,
         roles: &[RoleAssignment],
-        standards: &[String],
+        _standards: &[String],
     ) -> Vec<String> {
         let mut steps = Vec::new();
-        let primary = standards
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "PMI PMBOK".to_string());
-        let secondary = standards.get(1).cloned().unwrap_or_else(|| primary.clone());
-
         steps.push(format!(
-            "Initiate \"{objective}\" using {primary} charter and scope alignment"
-        ));
-        steps.push(format!(
-            "Baseline requirements and constraints with {secondary} governance"
+            "Clarify success criteria for \"{objective}\" and collect any missing constraints."
         ));
 
-        for role in roles.iter().take(3) {
-            let responsibility = role
-                .responsibilities
-                .first()
-                .cloned()
-                .unwrap_or_else(|| role.summary.clone());
-            steps.push(format!("{name} leads: {responsibility}", name = role.name));
+        if roles.is_empty() {
+            steps.push(format!(
+                "Execute the core work for \"{objective}\" and document the approach."
+            ));
+        } else {
+            for role in roles.iter().take(2) {
+                let responsibility = role
+                    .responsibilities
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| role.summary.clone());
+                steps.push(format!(
+                    "{name} executes: {responsibility}",
+                    name = role.name
+                ));
+            }
+            if roles.len() > 2 {
+                steps.push(
+                    "Coordinate any remaining specialists to cover outstanding tasks.".to_string(),
+                );
+            }
         }
 
-        if steps.len() < 4 {
+        steps.push(format!(
+            "Validate the output for \"{objective}\" with quick checks and capture follow-up notes."
+        ));
+
+        if steps.len() < 3 {
             steps.push(format!(
-                "Develop execution roadmap with stakeholder buy-in per {primary}"
+                "Summarize deliverables and surface any blockers for \"{objective}\"."
             ));
         }
 
-        steps.push(format!(
-            "Integrate outputs and monitor risks referencing {primary} controls"
-        ));
-        steps.push(format!(
-            "Conduct final acceptance review against {}",
-            standards
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "PMI PMBOK quality gates".to_string())
-        ));
+        steps.truncate(4);
+        steps
+    }
 
-        steps.into_iter().take(6).collect()
+    fn finalize_analysis(&self, objective: &str, mut analysis: RoleAnalysis) -> RoleAnalysis {
+        let objective_lower = objective.to_lowercase();
+        let is_simple = self.is_simple_objective(&objective_lower);
+
+        if is_simple {
+            analysis.primary_domain = "software_engineering".to_string();
+            analysis.primary_standards.clear();
+            analysis.roles = vec![self.single_technical_lead_role()];
+            analysis.task_breakdown = self.simple_task_breakdown(objective);
+            analysis.risk_register.clear();
+            analysis.complexity_estimate = Some(1);
+            return analysis;
+        }
+
+        if analysis.roles.is_empty() {
+            analysis.roles.push(self.single_technical_lead_role());
+        }
+        analysis.roles.truncate(3);
+
+        if analysis.task_breakdown.is_empty() {
+            analysis.task_breakdown = self.simple_task_breakdown(objective);
+        } else {
+            let has_verification_step = analysis.task_breakdown.iter().any(|step| {
+                let lower = step.to_lowercase();
+                ["verify", "test", "validate", "review"]
+                    .iter()
+                    .any(|hint| lower.contains(hint))
+            });
+            if !has_verification_step {
+                analysis.task_breakdown.push(format!(
+                    "Verify the output for \"{objective}\" by running automated checks or executing the deliverable."
+                ));
+            }
+            analysis.task_breakdown.truncate(6);
+        }
+
+        analysis.risk_register.truncate(2);
+
+        analysis
+    }
+
+    fn is_simple_objective(&self, objective_lower: &str) -> bool {
+        let trimmed_len = objective_lower.trim().len();
+        if trimmed_len > 160 {
+            return false;
+        }
+
+        let complex_terms = [
+            "project",
+            "program",
+            "architecture",
+            "compliance",
+            "policy",
+            "audit",
+            "deployment",
+            "infrastructure",
+            "roadmap",
+            "multi-agent",
+            "migration",
+            "platform",
+        ];
+        if complex_terms
+            .iter()
+            .any(|term| objective_lower.contains(term))
+        {
+            return false;
+        }
+
+        let simple_terms = [
+            "script",
+            "function",
+            "snippet",
+            "utility",
+            "quick",
+            "simple",
+            "add",
+            "sum",
+            "hello world",
+            "print",
+            "format",
+            "convert",
+            "rename",
+            "calculate",
+        ];
+
+        simple_terms
+            .iter()
+            .any(|term| objective_lower.contains(term))
+    }
+
+    fn single_technical_lead_role(&self) -> RoleAssignment {
+        if let Some(definition) = self.taxonomy.roles.get("technical_lead") {
+            return RoleAssignment {
+                name: definition.default_title.clone(),
+                standard_role: definition.standard_role.clone(),
+                summary: definition.description.clone(),
+                core_competencies: definition.core_competencies.clone(),
+                responsibilities: definition.default_responsibilities.clone(),
+            };
+        }
+
+        RoleAssignment {
+            name: "Technical Lead".to_string(),
+            standard_role: "technical_lead".to_string(),
+            summary: "Owns design, implementation, and validation for focused engineering tasks"
+                .to_string(),
+            core_competencies: vec![
+                "Implementation".to_string(),
+                "Testing".to_string(),
+                "Documentation".to_string(),
+            ],
+            responsibilities: vec![
+                "Clarify requirements with the requester".to_string(),
+                "Implement the requested change".to_string(),
+                "Verify the result and report status".to_string(),
+            ],
+        }
+    }
+
+    fn simple_task_breakdown(&self, objective: &str) -> Vec<String> {
+        vec![
+            format!(
+                "Confirm input/output expectations for \"{objective}\" and capture any sample data."
+            ),
+            format!(
+                "Implement the deliverable for \"{objective}\" using the available workspace tools."
+            ),
+            format!(
+                "Verify the implementation for \"{objective}\" by running tests, commands, or scripts and summarize the outcome."
+            ),
+        ]
     }
 
     fn estimate_complexity(
@@ -1226,13 +1327,27 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_analysis_without_llm() {
+    fn test_fallback_analysis_simple_objective_without_llm() {
         let manager = AgentManager::new(test_config());
-        let analysis = manager.fallback_role_analysis("Build a resilient web platform");
+        let analysis =
+            manager.fallback_role_analysis("Write a small Python script that prints hello.");
         assert_eq!(analysis.primary_domain, "software_engineering");
-        assert!(!analysis.roles.is_empty());
-        assert!(analysis.task_breakdown.len() >= 5);
-        assert_eq!(analysis.risk_register.len(), 2);
+        assert_eq!(analysis.roles.len(), 1);
+        assert!(
+            analysis
+                .roles
+                .iter()
+                .all(|role| role.standard_role == "technical_lead")
+        );
+        assert!(analysis.task_breakdown.len() >= 3);
+        assert!(analysis.task_breakdown.len() <= 4);
+        assert!(analysis.risk_register.is_empty());
         assert!(analysis.complexity_estimate.is_some());
+        assert!(
+            analysis
+                .task_breakdown
+                .iter()
+                .any(|step| step.to_lowercase().contains("verify"))
+        );
     }
 }

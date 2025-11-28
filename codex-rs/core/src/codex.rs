@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 
 use crate::AuthManager;
 use crate::client_common::REVIEW_PROMPT;
+use crate::client_common::tools::ToolSpec;
 use crate::event_mapping::map_response_item_to_event_messages;
 use crate::function_tool::FunctionCallError;
 use crate::review_format::format_review_findings_block;
@@ -231,6 +232,72 @@ impl Codex {
             .map_err(|_| CodexErr::InternalAgentDied)?;
         Ok(event)
     }
+}
+
+pub(crate) struct ToolRuntime {
+    pub(crate) router: Arc<ToolRouter>,
+    pub(crate) specs: Vec<ToolSpec>,
+    pub(crate) session: Arc<Session>,
+    pub(crate) turn_context: Arc<TurnContext>,
+    pub(crate) tracker: SharedTurnDiffTracker,
+}
+
+pub(crate) async fn create_tool_runtime_for_multi_agent(
+    config: Arc<Config>,
+    auth_manager: Arc<AuthManager>,
+) -> anyhow::Result<ToolRuntime> {
+    let mut cfg = (*config).clone();
+    cfg.include_plan_tool = true;
+    let config_for_tools = Arc::new(cfg);
+
+    let user_instructions = get_user_instructions(&config_for_tools).await;
+    let (tx_event, rx_event) = async_channel::unbounded();
+
+    let configure_session = ConfigureSession {
+        provider: config_for_tools.model_provider.clone(),
+        model: config_for_tools.model.clone(),
+        model_reasoning_effort: config_for_tools.model_reasoning_effort,
+        model_reasoning_summary: config_for_tools.model_reasoning_summary,
+        user_instructions,
+        base_instructions: config_for_tools.base_instructions.clone(),
+        approval_policy: config_for_tools.approval_policy,
+        sandbox_policy: config_for_tools.sandbox_policy.clone(),
+        notify: UserNotifier::new(config_for_tools.notify.clone()),
+        cwd: config_for_tools.cwd.clone(),
+    };
+
+    let (session, turn_context) = Session::new(
+        configure_session,
+        config_for_tools.clone(),
+        auth_manager,
+        tx_event,
+        InitialHistory::New,
+        SessionSource::Cli,
+    )
+    .await?;
+
+    // Drain events to avoid unbounded growth.
+    tokio::spawn(async move {
+        while rx_event.recv().await.is_ok() {
+            // Intentionally discard events in multi-agent mode.
+        }
+    });
+
+    let mcp_tools = session.services.mcp_connection_manager.list_all_tools();
+    let router = Arc::new(ToolRouter::from_config(
+        &turn_context.tools_config,
+        Some(mcp_tools),
+    ));
+    let specs = router.specs();
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::default()));
+
+    Ok(ToolRuntime {
+        router,
+        specs,
+        session,
+        turn_context: Arc::new(turn_context),
+        tracker,
+    })
 }
 
 use crate::state::SessionState;

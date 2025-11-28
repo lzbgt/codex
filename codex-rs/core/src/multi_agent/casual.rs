@@ -13,8 +13,11 @@ use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::ShellToolCallParams;
+use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -26,18 +29,14 @@ use uuid::Uuid;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::tools::ToolSpec;
+use crate::codex::ToolRuntime;
+use crate::codex::create_tool_runtime_for_multi_agent;
 use crate::config::Config;
 use crate::conversation_manager::ConversationManager;
-use crate::exec::ExecParams;
-use crate::exec::SandboxType;
-use crate::exec::process_exec_tool_call;
-use crate::exec_env::create_env;
 use crate::model_family::derive_default_model_family;
 use crate::multi_agent::agents::RoleAnalysis;
 use crate::rollout::RolloutRecorder;
-use crate::tools::format_exec_output_apply_patch;
-use crate::tools::spec::create_shell_tool;
-use codex_protocol::protocol::SandboxPolicy;
+use crate::tools::ToolRouter;
 
 /// Casual human engagement actions
 #[derive(Debug, Clone)]
@@ -91,6 +90,7 @@ pub struct MessageDetail {
 }
 
 const MAX_TOOL_TURNS: usize = 8;
+const MAX_PLAN_UPDATES_PER_TURN: usize = 4;
 
 /// Detailed task status with full breakdown
 #[derive(Debug, Clone)]
@@ -103,6 +103,7 @@ pub struct DetailedTaskStatus {
     pub artifact_count: usize,
     pub human_engagement_count: u32,
     pub created_at: String,
+    pub plan: Option<TaskPlan>,
 }
 
 /// Casual multi-agent task session
@@ -119,6 +120,7 @@ pub struct CasualTaskSession {
     pub session_persistence_path: Option<PathBuf>,
     pub conversation_manager: Option<Arc<ConversationManager>>,
     pub rollout_recorder: Option<Arc<RolloutRecorder>>,
+    pub plan: Option<TaskPlan>,
 }
 
 /// Casual agent (dynamically created by LLM)
@@ -209,6 +211,20 @@ pub enum ArtifactType {
     Other,
 }
 
+/// Stored representation of the task plan reported by agents
+#[derive(Debug, Clone)]
+pub struct TaskPlan {
+    pub explanation: Option<String>,
+    pub steps: Vec<PlanStep>,
+}
+
+/// Individual plan step with status
+#[derive(Debug, Clone)]
+pub struct PlanStep {
+    pub step: String,
+    pub status: String,
+}
+
 /// Agent role definition from LLM planning
 #[derive(Debug, Clone)]
 pub struct AgentRole {
@@ -235,12 +251,13 @@ pub struct CasualMultiAgentOrchestrator {
     config: Arc<Config>,
     conversation_manager: Arc<ConversationManager>,
     auth_manager: Arc<crate::auth::AuthManager>,
+    tool_runtime: Arc<ToolRuntime>,
 }
 
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 impl CasualMultiAgentOrchestrator {
     /// Create a new casual multi-agent orchestrator
-    pub fn new(config: Arc<Config>) -> Result<Self> {
+    pub async fn new(config: Arc<Config>) -> Result<Self> {
         let (message_tx, _message_rx) = mpsc::unbounded_channel();
 
         // Initialize conversation manager for session persistence
@@ -253,12 +270,17 @@ impl CasualMultiAgentOrchestrator {
             codex_protocol::protocol::SessionSource::Cli,
         ));
 
+        let tool_runtime = Arc::new(
+            create_tool_runtime_for_multi_agent(config.clone(), auth_manager.clone()).await?,
+        );
+
         Ok(Self {
             active_sessions: Arc::new(RwLock::new(HashMap::new())),
             message_queue: message_tx,
             config,
             conversation_manager,
             auth_manager,
+            tool_runtime,
         })
     }
 
@@ -296,6 +318,7 @@ impl CasualMultiAgentOrchestrator {
             session_persistence_path: Some(rollout_recorder.get_rollout_path()),
             conversation_manager: Some(self.conversation_manager.clone()),
             rollout_recorder: Some(rollout_recorder),
+            plan: None,
         };
 
         {
@@ -511,6 +534,7 @@ impl CasualMultiAgentOrchestrator {
             artifact_count,
             human_engagement_count,
             created_at: session.created_at.to_rfc3339(),
+            plan: session.plan.clone(),
         })
     }
 
@@ -742,28 +766,17 @@ impl CasualMultiAgentOrchestrator {
 
     /// Create prompt for model
     async fn create_model_prompt(&self, task_context: &str, role: &str) -> Result<Prompt> {
-        let system_message = format!(
-            "You are a {role} agent in a multi-agent collaboration system. Take full ownership of your assigned work: plan, implement, and validate results on your own whenever possible. Use the available tools (for example, shell commands) to edit files, run code, and execute tests. Do not invoke git or other version-control commands unless the user explicitly asks for them. Only request human assistance when you have tried all reasonable tool-driven approaches and remain blocked. Provide clear, actionable deliverables and summaries that your fellow agents can consume without additional guidance.\n\n{task_context}"
+        let combined_message = format!(
+            "You are a {role} agent in a multi-agent collaboration system. Take full ownership of your assigned work: plan, implement, and validate results on your own whenever possible. Use the available tools (for example, shell commands) to edit files, run code, and execute tests. Do not invoke git or other version-control commands unless the user explicitly asks for them. Only request human assistance when you have tried all reasonable tool-driven approaches and remain blocked. Provide clear, actionable deliverables and summaries that your fellow agents can consume without additional guidance.\n\n{task_context}\n\nPlease complete your assigned task as a {role} agent. Provide a detailed response that can be used by other agents in the collaboration."
         );
 
-        let user_message = format!(
-            "Please complete your assigned task as a {role} agent. Provide a detailed response that can be used by other agents in the collaboration."
-        );
-
-        let input = vec![
-            ResponseItem::Message {
-                id: None,
-                role: "system".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: system_message,
-                }],
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText { text: user_message }],
-            },
-        ];
+        let input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: combined_message,
+            }],
+        }];
 
         Ok(Prompt {
             input,
@@ -775,36 +788,73 @@ impl CasualMultiAgentOrchestrator {
     }
 
     fn default_tool_specs(&self) -> Vec<ToolSpec> {
-        vec![create_shell_tool()]
+        self.tool_runtime.specs.clone()
     }
 
-    fn resolve_sandbox_type(&self) -> SandboxType {
-        match &self.config.sandbox_policy {
-            SandboxPolicy::DangerFullAccess => SandboxType::None,
-            SandboxPolicy::ReadOnly | SandboxPolicy::WorkspaceWrite { .. } => {
-                #[cfg(target_os = "macos")]
-                {
-                    SandboxType::MacosSeatbelt
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    SandboxType::LinuxSeccomp
-                }
-                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                {
-                    SandboxType::None
-                }
+    async fn record_plan_update(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        args: &UpdatePlanArgs,
+    ) -> Result<()> {
+        if args.plan.is_empty() {
+            anyhow::bail!("update_plan requires at least one step");
+        }
+
+        let mut steps: Vec<PlanStep> = Vec::with_capacity(args.plan.len());
+        let mut in_progress_count = 0usize;
+        for PlanItemArg { step, status } in args.plan.iter() {
+            if matches!(status, StepStatus::InProgress) {
+                in_progress_count += 1;
             }
+            let status_label = match status {
+                StepStatus::Pending => "pending",
+                StepStatus::InProgress => "in_progress",
+                StepStatus::Completed => "completed",
+            };
+            steps.push(PlanStep {
+                step: step.clone(),
+                status: status_label.to_string(),
+            });
         }
-    }
 
-    fn resolve_workdir(&self, workdir: &str) -> PathBuf {
-        let candidate = PathBuf::from(workdir);
-        if candidate.is_absolute() {
-            candidate
-        } else {
-            self.config.cwd.join(candidate)
+        if in_progress_count > 1 {
+            anyhow::bail!("update_plan may have at most one in_progress step");
         }
+
+        {
+            let mut sessions = self.active_sessions.write().await;
+            let session = sessions
+                .get_mut(task_id)
+                .ok_or_else(|| anyhow!("Task not found: {task_id}"))?;
+            session.plan = Some(TaskPlan {
+                explanation: args.explanation.clone(),
+                steps: steps.clone(),
+            });
+        }
+
+        let mut summary_lines = Vec::new();
+        if let Some(explanation) = args.explanation.as_ref()
+            && !explanation.trim().is_empty()
+        {
+            summary_lines.push(format!("Explanation: {explanation}"));
+        }
+        for PlanStep { step, status } in &steps {
+            summary_lines.push(format!("- [{status}] {step}"));
+        }
+        let summary = summary_lines.join("\n");
+
+        self.agent_send_message(
+            task_id,
+            agent_id,
+            None,
+            format!("Updated plan:\n{summary}"),
+            MessageType::TaskUpdate,
+            false,
+        )
+        .await?;
+
+        Ok(())
     }
 
     async fn run_agent_conversation(
@@ -814,7 +864,12 @@ impl CasualMultiAgentOrchestrator {
         model_client: &crate::client::ModelClient,
         mut conversation: Vec<ResponseItem>,
     ) -> Result<String> {
-        for _ in 0..MAX_TOOL_TURNS {
+        let mut non_plan_tool_turns = 0usize;
+        let mut consecutive_plan_updates = 0usize;
+        loop {
+            if non_plan_tool_turns >= MAX_TOOL_TURNS {
+                return Err(anyhow!("Tool execution loop exceeded maximum iterations"));
+            }
             let prompt = Prompt {
                 input: conversation.clone(),
                 tools: self.default_tool_specs(),
@@ -830,7 +885,7 @@ impl CasualMultiAgentOrchestrator {
             while let Some(event_result) = response_stream.rx_event.recv().await {
                 match event_result {
                     Ok(ResponseEvent::OutputItemDone(item)) => match &item {
-                        ResponseItem::FunctionCall { .. } => {
+                        ResponseItem::FunctionCall { .. } | ResponseItem::CustomToolCall { .. } => {
                             pending_tool = Some(item.clone());
                         }
                         ResponseItem::Message { .. } => {
@@ -846,19 +901,47 @@ impl CasualMultiAgentOrchestrator {
             }
 
             if let Some(function_call) = pending_tool {
+                let is_plan_update = matches!(
+                    &function_call,
+                    ResponseItem::FunctionCall { name, .. } if name == "update_plan"
+                );
                 conversation.push(function_call.clone());
                 let output_payload = self
                     .handle_tool_call(task_id, agent_id, &function_call)
                     .await?;
-                let call_id = if let ResponseItem::FunctionCall { call_id, .. } = &function_call {
-                    call_id.clone()
+                match &function_call {
+                    ResponseItem::FunctionCall { call_id, .. } => {
+                        conversation.push(ResponseItem::FunctionCallOutput {
+                            call_id: call_id.clone(),
+                            output: output_payload,
+                        });
+                    }
+                    ResponseItem::CustomToolCall { call_id, .. } => {
+                        conversation.push(ResponseItem::CustomToolCallOutput {
+                            call_id: call_id.clone(),
+                            output: output_payload.content,
+                        });
+                    }
+                    _ => {}
+                }
+                if is_plan_update {
+                    consecutive_plan_updates += 1;
+                    if consecutive_plan_updates > MAX_PLAN_UPDATES_PER_TURN {
+                        return Err(anyhow!(
+                            "update_plan invoked too many times without producing an answer"
+                        ));
+                    }
+                    conversation.push(ResponseItem::Message {
+                        id: None,
+                        role: "system".to_string(),
+                        content: vec![ContentItem::InputText {
+                            text: "Plan recorded. Move directly into execution: run the required tools (for example, shell) to produce the deliverable and verify it before updating the plan again.".to_string(),
+                        }],
+                    });
                 } else {
-                    String::new()
-                };
-                conversation.push(ResponseItem::FunctionCallOutput {
-                    call_id,
-                    output: output_payload,
-                });
+                    consecutive_plan_updates = 0;
+                    non_plan_tool_turns += 1;
+                }
                 continue;
             }
 
@@ -872,8 +955,6 @@ impl CasualMultiAgentOrchestrator {
                 "Model response produced neither tool call nor assistant message"
             ));
         }
-
-        Err(anyhow!("Tool execution loop exceeded maximum iterations"))
     }
 
     async fn handle_tool_call(
@@ -882,112 +963,62 @@ impl CasualMultiAgentOrchestrator {
         agent_id: &str,
         call: &ResponseItem,
     ) -> Result<FunctionCallOutputPayload> {
-        match call {
-            ResponseItem::FunctionCall {
-                name, arguments, ..
-            } => match name.as_str() {
-                "shell" | "container.exec" | "local_shell" => {
-                    self.run_shell_tool(task_id, agent_id, arguments).await
-                }
-                other => Err(anyhow!("Unsupported tool call: {other}")),
-            },
-            _ => Err(anyhow!("Expected function call item for tool execution")),
-        }
-    }
+        let maybe_tool_call =
+            ToolRouter::build_tool_call(self.tool_runtime.session.as_ref(), call.clone())
+                .map_err(|err| anyhow!("failed to parse tool invocation: {err}"))?;
 
-    async fn run_shell_tool(
-        &self,
-        task_id: &str,
-        agent_id: &str,
-        arguments: &str,
-    ) -> Result<FunctionCallOutputPayload> {
-        let params: ShellToolCallParams = serde_json::from_str(arguments)
-            .map_err(|err| anyhow!("failed to parse shell tool arguments: {err}"))?;
+        let tool_call =
+            maybe_tool_call.ok_or_else(|| anyhow!("tool invocation missing call information"))?;
 
-        if let Some(cmd) = params.command.first()
-            && cmd == "git"
+        if let ResponseItem::FunctionCall {
+            name, arguments, ..
+        } = call
+            && name == "update_plan"
+            && let Ok(args) = serde_json::from_str::<UpdatePlanArgs>(arguments)
         {
-            return Ok(FunctionCallOutputPayload {
-                content: "Git commands are disabled during multi-agent runs; focus on editing and testing the code directly.".to_string(),
-                success: Some(false),
-            });
+            self.record_plan_update(task_id, agent_id, &args).await?;
         }
 
-        let working_dir = params
-            .workdir
-            .as_deref()
-            .map(|wd| self.resolve_workdir(wd))
-            .unwrap_or_else(|| self.config.cwd.clone());
+        let sub_id = Uuid::new_v4().to_string();
+        let response = self
+            .tool_runtime
+            .router
+            .dispatch_tool_call(
+                self.tool_runtime.session.clone(),
+                self.tool_runtime.turn_context.clone(),
+                self.tool_runtime.tracker.clone(),
+                sub_id,
+                tool_call.clone(),
+            )
+            .await
+            .map_err(|err| anyhow!("tool execution failed: {err}"))?;
 
-        let command_preview = params.command.join(" ");
+        let payload = match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => output,
+            ResponseInputItem::CustomToolCallOutput { output, .. } => FunctionCallOutputPayload {
+                content: output,
+                success: Some(true),
+            },
+            other => {
+                return Err(anyhow!("unsupported tool response type: {:?}", other));
+            }
+        };
+
+        let requires_attention = matches!(payload.success, Some(false));
+        let summary = summarize_for_feed(&payload.content);
         self.agent_send_message(
             task_id,
             agent_id,
             None,
-            format!("Executing shell command: {command_preview}"),
+            format!("Tool {} result: {summary}", tool_call.tool_name),
             MessageType::TaskUpdate,
-            false,
+            requires_attention,
         )
         .await?;
 
-        let exec_params = ExecParams {
-            command: params.command.clone(),
-            cwd: working_dir,
-            timeout_ms: params.timeout_ms,
-            env: create_env(&self.config.shell_environment_policy),
-            with_escalated_permissions: params.with_escalated_permissions,
-            justification: params.justification.clone(),
-        };
+        self.auto_save_session_state(task_id).await?;
 
-        let sandbox_type = self.resolve_sandbox_type();
-
-        let exec_result = process_exec_tool_call(
-            exec_params,
-            sandbox_type,
-            &self.config.sandbox_policy,
-            &self.config.cwd,
-            &self.config.codex_linux_sandbox_exe,
-            None,
-        )
-        .await;
-
-        match exec_result {
-            Ok(output) => {
-                let content = format_exec_output_apply_patch(&output);
-                let summary = summarize_for_feed(&content);
-                self.agent_send_message(
-                    task_id,
-                    agent_id,
-                    None,
-                    format!("Shell output summary: {summary}"),
-                    MessageType::TaskUpdate,
-                    false,
-                )
-                .await?;
-                self.auto_save_session_state(task_id).await?;
-                Ok(FunctionCallOutputPayload {
-                    content,
-                    success: Some(output.exit_code == 0),
-                })
-            }
-            Err(err) => {
-                let message = format!("Shell command failed: {err}");
-                self.agent_send_message(
-                    task_id,
-                    agent_id,
-                    None,
-                    message.clone(),
-                    MessageType::TaskUpdate,
-                    true,
-                )
-                .await?;
-                self.auto_save_session_state(task_id).await?;
-                Ok(FunctionCallOutputPayload {
-                    content: message,
-                    success: Some(false),
-                })
-            }
-        }
+        Ok(payload)
     }
 
     async fn set_agent_status(
@@ -1428,6 +1459,7 @@ impl CasualMultiAgentOrchestrator {
             config: self.config.clone(),
             conversation_manager: self.conversation_manager.clone(),
             auth_manager: self.auth_manager.clone(),
+            tool_runtime: self.tool_runtime.clone(),
         }
     }
 
@@ -1519,6 +1551,7 @@ impl CasualMultiAgentOrchestrator {
             session_persistence_path: Some(rollout_path),
             conversation_manager: Some(self.conversation_manager.clone()),
             rollout_recorder: Some(rollout_recorder),
+            plan: None,
         };
 
         {
@@ -1588,7 +1621,7 @@ pub mod api {
 
     /// Initialize the casual multi-agent system
     pub async fn init(config: Arc<Config>) -> Result<()> {
-        let orchestrator = CasualMultiAgentOrchestrator::new(config)?;
+        let orchestrator = CasualMultiAgentOrchestrator::new(config).await?;
         ORCHESTRATOR
             .set(Arc::new(orchestrator))
             .map_err(|_| anyhow::anyhow!("Casual multi-agent system already initialized"))?;
