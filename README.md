@@ -11,18 +11,6 @@
 
 ---
 
-## Unofficial paid local workflow support
-
-This repository is not an official support channel. If you need paid help setting up a local Codex terminal workflow, session runbook, or CodexW-style wrapper around the upstream Codex CLI, use these source-tagged links:
-
-- CodexW setup page: https://x2.brucelu.top/codexw/?source=github-codex-top
-- Sample setup runbook: https://x2.brucelu.top/codexw/sample/?source=github-codex-top
-- Ask a pre-sales question: https://x2.brucelu.top/products/contact/?offer=codexw&source=github-codex-top
-- Checkout: https://x2.brucelu.top/codexw/checkout/?source=github-codex-top
-
-The offer is for unofficial local workflow setup and runbook support. It does not include OpenAI credits, official OpenAI support, changes to OpenAI products, or guaranteed Codex availability.
-
-
 ## Quickstart
 
 ### Installing and running Codex CLI
